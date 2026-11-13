@@ -2,21 +2,79 @@
 # a3dp-client-ui — toggle the A3DP client preset (Phase-1 phone UI) in the
 # deployed Mainsail theme. The preset is CSS-only: it hides operator-only
 # surfaces (console/heightmap/viewer/history/timelapse/machine pages, toolhead
-# + extruder + machine-settings + macro panels, topbar settings/power) so a
-# customer sees status/progress, temps, webcam, job start/pause/stop, e-stop.
+# + extruder + machine-settings panels, ALL macro groups except the A3DP
+# "Service" group, topbar settings/power) so a customer sees status/progress,
+# temps, webcam, job start/pause/stop, e-stop — plus the Service macro group
+# with REMOTE_SETUP / RESTART_MONITOR (the no-SSH onboarding path).
 #
 # The managed block is marker-delimited so on/off is idempotent and the rest
 # of custom.css (A3DP skin) is never touched. Takes effect on browser reload.
 #
-#   sudo a3dp-client-ui on      # append/refresh the managed block
+#   sudo a3dp-client-ui on      # append/refresh the managed block + seed group
 #   sudo a3dp-client-ui off     # strip the managed block
 #   sudo a3dp-client-ui status
+#   sudo a3dp-client-ui seed    # (re-)seed the Service macro group only
 set -u
 CFG=/home/pi/printer_data/config
 THEME="$CFG/.theme/custom.css"
 SRC=/opt/a3dp/shared/theme-client/client.css
 MARK_START="# === a3dp client preset (managed; toggle: sudo a3dp-client-ui off) ==="
 MARK_END="# === end a3dp client preset ==="
+
+# ---------------------------------------------------------------- seed ----
+# The preset hides every macro panel except the "Service" group, so the
+# onboarding macros stay reachable from the dashboard. Mainsail macro groups
+# live in the moonraker database (namespace "mainsail", key "macros") — there
+# is no config-file equivalent. The group UUID is FIXED
+# (a3d0c1de-0000-4000-8000-00000000a3d0): Mainsail renders group panels as
+# macrogroup_<group-uuid>_panel (verified live a3dp525 2026-11-13), and the
+# client.css hide rule excludes exactly this UUID. Idempotent — re-seeding
+# updates the same key. Moonraker unreachable is a warn-only failure: the CSS
+# preset still applies; re-run `sudo a3dp-client-ui seed` once moonraker is up.
+# Note: Mainsail drops a group panel when none of its macros exist in
+# klipper — on image units macros/a3dp-remote.cfg always provides them.
+seed_macros() {
+  python3 - <<'PY'
+import json, sys, time, urllib.error, urllib.request
+UUID = "a3d0c1de-0000-4000-8000-00000000a3d0"
+GROUP = {
+    "name": "Service", "color": "primary", "colorCustom": "#fff",
+    "showInStandby": True, "showInPause": True, "showInPrinting": True,
+    "macros": [
+        {"pos": 1, "name": "REMOTE_SETUP", "color": "group",
+         "showInStandby": True, "showInPrinting": True, "showInPause": True},
+        {"pos": 2, "name": "RESTART_MONITOR", "color": "group",
+         "showInStandby": True, "showInPrinting": True, "showInPause": True},
+    ],
+}
+BASE = "http://127.0.0.1:7125"
+def call(path, payload=None):
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(BASE + path, data=data,
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=5) as r:
+        return json.loads(r.read())
+value = None
+for _ in range(5):
+    try:
+        value = call("/server/database/item?namespace=mainsail&key=macros")["result"]["value"]
+        break
+    except urllib.error.HTTPError as e:
+        if e.code == 404:  # fresh db — Mainsail has no stored settings yet
+            value = {"mode": "standard", "hiddenMacros": [], "macrogroups": {}}
+            break
+        time.sleep(2)
+    except Exception:
+        time.sleep(2)
+if value is None:
+    print("WARN: moonraker unreachable — Service macro group NOT seeded; "
+          "re-run: sudo a3dp-client-ui seed")
+    sys.exit(1)
+value.setdefault("macrogroups", {})[UUID] = GROUP
+call("/server/database/item", {"namespace": "mainsail", "key": "macros", "value": value})
+print("Service macro group seeded (REMOTE_SETUP, RESTART_MONITOR)")
+PY
+}
 
 strip_block() {
   python3 - "$1" "$2" "$3" <<'PY'
@@ -48,6 +106,10 @@ case "${1:-status}" in
     { echo "$MARK_START"; cat "$SRC"; echo "$MARK_END"; } >> "$THEME"
     chown pi:pi "$THEME"
     echo "client preset ENABLED (reload Mainsail / clear browser CSS cache)"
+    seed_macros || true   # warn-only; re-run `seed` if moonraker was down
+    ;;
+  seed)
+    seed_macros
     ;;
   off)
     [ -f "$THEME" ] || { echo "no theme deployed; nothing to do"; exit 0; }

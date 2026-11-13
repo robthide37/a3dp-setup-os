@@ -52,8 +52,13 @@ Machine profiles shipped in the image (first boot selects ONE):
      `a3dp-machine.conf` on the boot partition containing
      `A3DP_CLIENT_UI=1` (or an empty file named `a3dp-client-ui`). First boot
      curates Mainsail to the phone-friendly client preset (status/progress,
-     temps, webcam, start/pause/stop, e-stop — operator pages hidden). Toggle
-     later without a re-flash: `sudo a3dp-client-ui on|off`.
+     temps, webcam, start/pause/stop, e-stop — operator pages hidden) and
+     seeds a **Service** macro group (fixed UUID
+     `a3d0c1de-0000-4000-8000-00000000a3d0`, moonraker db `mainsail.macros`)
+     holding `REMOTE_SETUP` + `RESTART_MONITOR` — the only macro group the
+     preset keeps visible, so onboarding needs no SSH. Toggle later without a
+     re-flash: `sudo a3dp-client-ui on|off` (re-seed if moonraker was down
+     during first boot: `sudo a3dp-client-ui seed`).
    - Locale/timezone as usual.
 3. Boot. First boot runs `a3dp-firstboot` (log: `/var/log/a3dp-firstboot.log`)
    which deploys the profile config, enumerates MCU by-id paths, enables the
@@ -98,7 +103,8 @@ LAN + Tailscale CGNAT sources only; it is not exposed to the internet).
 
 Tailscale is pre-installed but **logged out** — the image carries zero auth
 material. The customer joins *their* tailnet without SSH, straight from the
-printer UI: **Macros → `REMOTE_SETUP`** (Mainsail) or the same macro on
+printer UI: **Dashboard → Service → `REMOTE_SETUP`** (Mainsail macro button;
+the Service group is seeded by the image, see below) or the same macro on
 KlipperScreen. The macro starts the login in the background and prints the
 auth URL to the console **and** writes it to `tailscale-auth-url.txt` in the
 Jobs list — the customer opens that URL on a device signed into their
@@ -138,8 +144,8 @@ only when the customer opts in. Two pieces:
      folder and creates/pastes two values: `llamaswap.key` and
      `confirm.token` (the services read them through symlinks from
      `/etc/a3dp-print-monitor/` — perms preserved, nothing committed).
-  2. Run the **`RESTART_MONITOR`** macro (Mainsail button / KlipperScreen) —
-     it restarts the enabled monitor services. Done, no SSH.
+  2. Run the **`RESTART_MONITOR`** macro (Dashboard → Service in Mainsail /
+     KlipperScreen) — it restarts the enabled monitor services. Done, no SSH.
   The VLM endpoint in `/home/pi/monitor/config.ini` must be the
   **tailnet-reachable** llama-swap address (see the topology note below) —
   never a LAN IP, which is unroutable from a customer unit.

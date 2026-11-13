@@ -4,8 +4,8 @@
    .theme/custom.css by `a3dp-client-ui on` (marker-delimited, togglable
    without a re-flash). The customer keeps: status/progress, temps,
    webcam, job start/pause/stop, emergency stop, job queue + g-code files,
-   announcements. Hidden: everything an operator needs and a client
-   shouldn't touch.
+   the Service macro group (REMOTE_SETUP / RESTART_MONITOR), announcements.
+   Hidden: everything an operator needs and a client shouldn't touch.
    Selectors verified live against Mainsail on a3dp525 (2026-11-13):
    - sidebar entries are anchors with stable hrefs
    - dashboard panels carry stable classes (.panel.<name>)
@@ -23,12 +23,22 @@
   display: none !important;
 }
 
-/* --- dashboard: operator-only panels --- */
+/* --- dashboard: operator-only panels ---
+   Macro groups: every macro panel is hidden EXCEPT the A3DP "Service"
+   group, which carries the customer-facing REMOTE_SETUP / RESTART_MONITOR
+   macros (the no-SSH onboarding path). `a3dp-client-ui on` seeds that
+   group into the Mainsail settings db (moonraker namespace "mainsail",
+   key "macros") with a FIXED UUID, because Mainsail renders group panels
+   as macrogroup_<group-uuid>_panel (verified live 2026-11-13) — the UUID,
+   not the group name, is the only stable handle. NOTE: Mainsail drops a
+   group panel entirely when none of its macros exist in klipper, so on
+   image units (macros/a3dp-remote.cfg loads in every profile) the Service
+   panel always renders. */
 .v-main .panel.toolhead-control-panel,
 .v-main .panel.extruder-control-panel,
 .v-main .panel.machine-settings-panel,
 .v-main .panel.miscellaneous-panel,
-.v-main .panel[class*="macrogroup"] {
+.v-main .panel[class*="macrogroup"]:not([class*="macrogroup_a3d0c1de-0000-4000-8000-00000000a3d0"]) {
   display: none !important;
 }
 

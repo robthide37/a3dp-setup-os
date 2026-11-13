@@ -183,6 +183,13 @@ systemctl restart nginx || true
 systemctl restart moonraker || true
 systemctl restart klipper || true
 
+# Re-seed the Service macro group (belt-and-suspenders): the client-UI block
+# above ran before moonraker's final restart; the seed is idempotent.
+if [ "$CLIENT_FLAG" = "1" ] || [ -f "$CLIENT_MARKER" ]; then
+  /usr/local/sbin/a3dp-client-ui seed 2>/dev/null || \
+    echo "WARN: Service macro group seed failed — re-run: sudo a3dp-client-ui seed"
+fi
+
 echo "profile=$PROFILE done at $(date -Is)"
 mkdir -p /var/lib/a3dp
 touch "$DONE"

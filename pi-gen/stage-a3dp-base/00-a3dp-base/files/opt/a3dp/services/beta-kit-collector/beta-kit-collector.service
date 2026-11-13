@@ -1,0 +1,17 @@
+[Unit]
+Description=A3DP beta kit collector (snapshot -> ONNX verdict -> cache; read-only)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=pi
+RuntimeDirectory=beta-kit-collector
+# non-blocking lock taken by the script (a held lock = burst in progress,
+# the tick is skipped — systemd also merges overlapping timer triggers)
+ExecStart=/opt/a3dp/detector-venv/bin/python /home/pi/beta-kit-collector/beta_kit_collector.py --config /home/pi/beta-kit-collector/config.ini
+# burst loop holds the oneshot up to burst_max_minutes (+cadence); raised
+# from the 300 s monitor default accordingly (30 min cap + headroom)
+TimeoutStartSec=2100
+Nice=10
+CPUWeight=40

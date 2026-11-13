@@ -1,0 +1,46 @@
+# beta-kit-collector — config (copy to config.ini and edit)
+#
+# The kit's camera is crowsnest-managed ustreamer on :8080 (same host).
+# This config carries NO secrets: the kit holds zero credentials for our
+# side (pull transport, design §6.3) and never writes to the printer.
+
+[camera]
+# ustreamer snapshot endpoint (crowsnest [cam 1], port 8080)
+snapshot_url = http://127.0.0.1:8080/?action=snapshot
+# set true only if the bench-mounted camera renders the bed upside-down
+preprocess_rotate_180 = false
+
+[model]
+# Baked into the image at /opt/a3dp/models (sha256 in the .sha256 sidecar).
+# Preprocessing is /255-normalized NCHW — the RKNN's raw 0-255 NHWC path
+# saturates confidences to 1.0 (docs/pi5-onbox-detection.md); never change it.
+model_path = /opt/a3dp/models/yolo11-failure-best-opset12.onnx
+conf_threshold = 0.30
+# classes that open an incident burst. Fleet lesson: spaghetti-only.
+alarm_classes = spaghetti
+
+[printer]
+# OPTIONAL read-only printer link. When the tester's printer host runs
+# Moonraker, point this at it (e.g. http://192.168.50.X:7125) and have us
+# add the kit's IP to their moonraker trusted_clients (one line, applied by
+# us over SSH at onboarding). GET-only, single-object print_stats query;
+# known-idle minutes capture nothing (storage ~10x smaller). Leave empty or
+# collect_state=false for the fully camera-only kit: state stays unknown and
+# the collector keeps every Nth frame instead (collect_every_nth).
+collect_state = true
+moonraker_url =
+# Job filenames are NEVER collected (a tester's file names are their business).
+
+[collect]
+data_dir = /home/pi/kit-data
+# unknown-state policy: keep every Nth minute frame (1 = keep all)
+collect_every_nth = 5
+# incident burst: capture every N seconds until the verdict clears or the cap
+burst_cadence_s = 10
+burst_max_minutes = 30
+# frames cache disk cap (verdicts.jsonl is never pruned and is tiny)
+cache_cap_gb = 8
+# scene guards: mean luma below this (0-255) = dark scene -> nondiagnostic
+dark_luma_threshold = 12
+# near-zero channel stddev = obstructed / lens capped -> nondiagnostic
+uniform_std_threshold = 3.0

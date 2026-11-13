@@ -1,0 +1,13 @@
+[Unit]
+Description=Fire beta-kit-collector every 60 s (minute-aligned)
+
+[Timer]
+# Minute-aligned fleet convention (design §5/§6.1): every wall-clock minute
+OnCalendar=*:*:00
+AccuracySec=1s
+RandomizedDelaySec=0
+Persistent=true
+Unit=beta-kit-collector.service
+
+[Install]
+WantedBy=timers.target

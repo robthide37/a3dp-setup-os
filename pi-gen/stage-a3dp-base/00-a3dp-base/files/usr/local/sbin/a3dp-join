@@ -1,0 +1,41 @@
+#!/bin/bash
+# /usr/local/sbin/a3dp-join — join the A3DP tailnet as a beta-collector kit.
+#
+# For kits that ship UN-joined (bench pre-join is the default path): runs
+# `tailscale up --advertise-tags=tag:beta-collector` and prints the auth URL.
+# The tester opens the URL in any browser and signs in with the account the
+# A3DP bench told them to use; the node then lands on our tailnet under
+# tag:beta-collector (ACL: ssh 22 for us, nothing else — docs/beta-data-kit.md
+# §4.1). Re-run this command if the URL expires or the node lapsed.
+set -u
+
+TAG=tag:beta-collector
+
+if tailscale status --json 2>/dev/null | grep -q '"BackendState": "Running"'; then
+  echo "tailscaled is already up."
+  if tailscale status 2>/dev/null | grep -q .; then
+    echo "This node appears joined already — nothing to do."
+    tailscale status | head -5
+    exit 0
+  fi
+fi
+
+echo "== a3dp-join: joining the A3DP tailnet ($TAG) =="
+echo "Open the URL below in a browser and approve the login."
+echo "(The URL expires in a few minutes — re-run a3dp-join if it does.)"
+echo
+
+# tailscale up blocks until auth completes (or fails); surface its output
+# (auth URL is printed by tailscale itself) and mirror it to a log we can
+# read later over Tailscale SSH (tee needs sudo: /var/log is root-owned).
+timeout 600 sudo tailscale up --advertise-tags=$TAG 2>&1 | sudo tee /var/log/a3dp-join.log
+rc=${PIPESTATUS[0]}
+echo
+if [ "$rc" -eq 0 ]; then
+  echo "Join complete. Status:"
+  tailscale status | head -5
+  tailscale ip -4 2>/dev/null | sed 's/^/tailnet IP: /'
+else
+  echo "Join did not complete (exit $rc). Re-run: sudo a3dp-join"
+fi
+exit "$rc"

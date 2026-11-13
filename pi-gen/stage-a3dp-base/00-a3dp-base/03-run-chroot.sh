@@ -36,7 +36,26 @@ chmod 0755 /usr/local/sbin/a3dp-firstboot
 chmod 0755 /usr/local/sbin/a3dp-client-ui
 chmod 0755 /usr/local/sbin/a3dp-remote-setup
 chmod 0755 /usr/local/sbin/a3dp-monitor-restart
+chmod 0755 /usr/local/sbin/a3dp-join
 systemctl enable a3dp-firstboot.service
+
+# ---- beta-collector detector runtime (baked; determinism over firstboot fetch) ----
+# Pi 5 CPU ONNX detector for the data-collection kits: measured on the Rift's
+# own Pi 5 (t_a922eefb) at mean 144 ms/frame, 119 MB RSS, 26/26 verdict parity
+# with the deployed fp16 RKNN. onnxruntime pinned to the measured version;
+# preprocessing is /255-normalized NCHW (the RKNN's raw 0-255 NHWC path
+# saturates confidences — never port it; docs/pi5-onbox-detection.md).
+python3 -m venv /opt/a3dp/detector-venv
+/opt/a3dp/detector-venv/bin/pip install --no-cache-dir \
+  "onnxruntime==1.31.1" "numpy<3" opencv-python-headless
+chmod -R a+rX /opt/a3dp/detector-venv
+
+# ---- beta-collector model artifact + digest gate ----
+# The opset12+simplify export of the SAME checkpoint as the deployed fp16
+# RKNN (provenance: docs/pi5-onbox-detection.md). sha256 sidecar is checked
+# at build so a corrupted bake fails the image, not a kit at first boot.
+install -d -m 0755 /opt/a3dp/models
+( cd /opt/a3dp/models && sha256sum -c yolo11-failure-best-opset12.onnx.sha256 )
 
 # ---- print-monitor key files: Mainsail-editable via symlinks (Rob-approved) ----
 # The monitor/confirm-listener read /etc/a3dp-print-monitor/{llamaswap.key,
@@ -53,13 +72,17 @@ ln -sf /home/pi/printer_data/config/a3dp/confirm.token /etc/a3dp-print-monitor/c
 cat > /usr/local/sbin/a3dp-config-backup <<'EOF'
 #!/bin/bash
 # Daily rotating backup of the klipper config tree (excl. firmware binaries).
+# A profile may repoint the source/dest via /etc/a3dp-config-backup.conf
+# (beta-collector backs up ~/kit-data minus frames instead).
 set -u
 SRC=/home/pi/printer_data/config
 DST=/home/pi/printer_data/config_backups/agent
+EXTRA_EXCLUDES=""
+[ -f /etc/a3dp-config-backup.conf ] && . /etc/a3dp-config-backup.conf
 STAMP=$(date +%Y%m%d-%H%M%S)
 mkdir -p "$DST"
 tar czf "$DST/config-$STAMP.tar.gz" -C "$(dirname "$SRC")" "$(basename "$SRC")" \
-    --exclude='firmware' --exclude='.theme' 2>/dev/null || exit 1
+    --exclude='firmware' --exclude='.theme' $EXTRA_EXCLUDES 2>/dev/null || exit 1
 ls -1t "$DST"/config-*.tar.gz 2>/dev/null | tail -n +15 | xargs -r rm -f
 EOF
 chmod 0755 /usr/local/sbin/a3dp-config-backup

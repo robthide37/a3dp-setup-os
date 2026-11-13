@@ -138,14 +138,14 @@ rm -f /etc/nginx/sites-enabled/default
 
 # ---- Crowsnest (camera) — UNATTENDED; exit-1 after successful install is a
 # known deviation (see file header), tolerated. ----
-# Installer runs AS PI (live-validated path); it invokes sudo internally for
-# the root steps (pi has NOPASSWD from stage 01). Without -u pi it leaks the
-# CI runner's $USER and creates /home/runner/... (CI failure 2026-11-13).
+# Installer runs as pi via inner sudo (live-validated flow, runbook #5):
+#   pi$ sudo CROWSNEST_UNATTENDED=1 make install  -> SUDO_USER=pi passes the
+# installer's not-as-root guard. Direct root run or `sudo -u pi make` sets
+# SUDO_USER=root/unset and aborts (CI failures 2026-11-13).
 git clone https://github.com/mainsail-crew/crowsnest.git /home/pi/crowsnest
 chown -R pi:pi /home/pi/crowsnest
-cd /home/pi/crowsnest
-sudo -u pi -H env USER=pi LOGNAME=pi HOME=/home/pi \
-  CROWSNEST_UNATTENDED=1 DEBIAN_FRONTEND=noninteractive make install || \
+sudo -u pi bash -c "cd /home/pi/crowsnest && \
+  sudo CROWSNEST_UNATTENDED=1 DEBIAN_FRONTEND=noninteractive make install" || \
   echo "NOTE: crowsnest installer exit code tolerated (known unattended deviation)"
 
 # Crowsnest is required camera infrastructure: its service MUST exist.

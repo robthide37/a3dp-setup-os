@@ -13,7 +13,10 @@ touch /etc/machine-id
 
 # belt-and-braces secret sweep — the build FAILS if anything secret-shaped
 # made it into the rootfs (public repo, customer-downloadable images).
-if grep -rliE 'BEGIN (RSA|OPENSSH|EC) PRIVATE KEY' \
+# -I: skip binary files. onnxruntime's .so libs embed the literal strings
+# "BEGIN RSA/EC PRIVATE KEY" as test-fixture data (verified in the wheel) —
+# they are not keys; every real PEM key is text, so binaries add no coverage.
+if grep -rliIE 'BEGIN (RSA|OPENSSH|EC) PRIVATE KEY' \
       /etc /home /opt /root /usr/local 2>/dev/null; then
   echo "SECRET LEAK: private key material found in image" >&2
   exit 1

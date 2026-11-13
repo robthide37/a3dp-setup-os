@@ -68,6 +68,16 @@ Machine profiles shipped in the image (first boot selects ONE):
    `/opt/a3dp/templates/dht-mqtt/README.md`), point crowsnest at the unit's
    camera (`/dev/v4l/by-id/`).
 
+**Raw-dd flashes (no Imager customization)**: etch the released `.img.xz` with
+dd/Etcher and the card still activates — mount the card's boot (FAT) partition
+and drop two files before first boot:
+- `a3dp-machine.conf` containing `A3DP_MACHINE=<profile>` (`rift-525`,
+  `meter-idex`, or `base`) — the profile selector when Imager isn't there to
+  set the hostname.
+- `a3dp-ssh.pub` with your public key(s), one per line — first boot installs
+  them and enables sshd (LF or CRLF line endings both work; keys are deduped,
+  comments/blank lines ignored).
+
 ### Flash-time credentials (per-unit only — never in the image)
 
 The public image ships with **zero credentials**: `pi` locked, SSH off. Two

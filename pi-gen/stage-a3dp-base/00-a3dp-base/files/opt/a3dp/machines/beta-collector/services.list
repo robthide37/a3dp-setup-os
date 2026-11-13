@@ -1,0 +1,6 @@
+# Machine profile: beta-collector (hostnames kit*, beta*).
+# Data-collection kit, NOT a printer: klipper/moonraker/mcu/webui stack is
+# switched off via disable.list; the camera lane (crowsnest ustreamer :8080)
+# and beta-kit-collector are the stack. See machines/beta-collector/disable.list
+# and /opt/a3dp/services/beta-kit-collector/.
+beta-kit-collector

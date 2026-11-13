@@ -1,0 +1,5 @@
+# beta-collector restart list — units whose config the profile overwrote at
+# first boot and that need one restart to pick it up. The crowsnest.conf
+# shipped in this profile switches the bundled webcam to 1080p MJPEG (the
+# installer default is 640x480 — silently inadequate for the dataset).
+crowsnest

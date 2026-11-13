@@ -1,0 +1,5 @@
+# Machine profile: base (unrecognized host).
+# No profile config is deployed; placeholder printer.cfg from this dir's
+# config/ is used. No services enabled.
+# disable.list: EMPTY by contract — a printer profile disables nothing. The
+# file exists so the firstboot disable-list contract is explicit per profile.

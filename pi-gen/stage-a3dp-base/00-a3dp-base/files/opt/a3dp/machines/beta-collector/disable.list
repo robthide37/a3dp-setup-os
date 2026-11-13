@@ -1,0 +1,11 @@
+# beta-collector disable list — units switched off on a data-collection kit
+# (design docs/beta-data-kit.md §5). Printer profiles ship an EMPTY list:
+# nothing is disabled, behavior unchanged.
+# NOTE: there is no separate Mainsail unit — nginx.service IS the Mainsail
+# server (ustreamer serves :8080 directly on a kit, no webui, no proxy).
+klipper
+moonraker
+klipper-mcu
+mcu-flashd
+a3dp-bedgate
+nginx

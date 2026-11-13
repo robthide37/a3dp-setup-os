@@ -36,6 +36,7 @@ if [ -z "$PROFILE" ]; then
   case "$H" in
     rift*|a3dp525*)  PROFILE=rift-525 ;;
     meter*|a3dpmeter*) PROFILE=meter-idex ;;
+    kit*|beta*)      PROFILE=beta-collector ;;
     *)               PROFILE=base ;;
   esac
   echo "profile from hostname '$H': $PROFILE"
@@ -145,7 +146,15 @@ PYEOF
   echo "      head0/head1 = lexicographic by-id order, not a wiring guarantee."
 fi
 
-# ------------------------------------------------------------ services ----
+# ------------------------------------------------------- services ----
+# Per-service install:
+#   payload/*            -> /home/pi/<svc>/
+#   <svc>.service        -> systemd, enabled
+#   <svc>.timer (if present) -> systemd, enabled --now; the .service is NOT
+#       started directly (timer-driven oneshot convention)
+#   config.ini.example   -> seeded as config.ini if the unit dir has none
+#   nginx/*.conf         -> sites-available + enabled
+DISABLED_UNITS=""
 if [ -f "$PROFILE_DIR/services.list" ]; then
   while read -r svc; do
     case "$svc" in ''|\#*) continue ;; esac
@@ -158,13 +167,28 @@ if [ -f "$PROFILE_DIR/services.list" ]; then
     for f in "$SRV_DIR"/payload/*; do
       [ -e "$f" ] && cp -a "$f" "$PI/$svc/"
     done
+    # seed config.ini from the example (services that ship one; never overwrite)
+    if [ -f "$SRV_DIR/payload/config.ini.example" ] && \
+       [ ! -e "$PI/$svc/config.ini" ]; then
+      cp -a "$SRV_DIR/payload/config.ini.example" "$PI/$svc/config.ini"
+      echo "config.ini seeded from example: $svc"
+    fi
     chown -R pi:pi "$PI/$svc"
     for u in "$SRV_DIR"/*.service; do
       [ -e "$u" ] || continue
       install -m 0644 "$u" /etc/systemd/system/
       systemctl daemon-reload || true
-      systemctl enable "$svc.service" && systemctl start "$svc.service" || \
-        echo "WARN: enabling $svc failed"
+      if [ -e "$SRV_DIR/$svc.timer" ]; then
+        # timer-driven service: arm the timer, never start the unit directly
+        install -m 0644 "$SRV_DIR/$svc.timer" /etc/systemd/system/
+        systemctl daemon-reload || true
+        systemctl enable "$svc.timer" && systemctl start "$svc.timer" || \
+          echo "WARN: enabling $svc.timer failed"
+        echo "service installed (timer-driven): $svc"
+      else
+        systemctl enable "$svc.service" && systemctl start "$svc.service" || \
+          echo "WARN: enabling $svc failed"
+      fi
     done
     for n in "$SRV_DIR"/nginx/*.conf; do
       [ -e "$n" ] || continue
@@ -174,6 +198,43 @@ if [ -f "$PROFILE_DIR/services.list" ]; then
     done
     echo "service installed+enabled: $svc"
   done < "$PROFILE_DIR/services.list"
+fi
+
+# ------------------------------------- per-profile disable list ----
+# beta-collector is NOT a printer: the klipper/moonraker/flasher/webui stack
+# is switched off (design docs/beta-data-kit.md §5). Printer profiles ship an
+# empty list — nothing is disabled, behavior unchanged. Listed units are
+# disabled AND stopped, and the final restart block below skips them.
+if [ -f "$PROFILE_DIR/disable.list" ]; then
+  while read -r u; do
+    case "$u" in ''|\#*) continue ;; esac
+    if systemctl disable --now "$u" >/dev/null 2>&1; then
+      echo "disabled (profile disable.list): $u"
+      DISABLED_UNITS="$DISABLED_UNITS $u"
+    else
+      echo "note: disable.list unit not present, skipped: $u"
+    fi
+  done < "$PROFILE_DIR/disable.list"
+fi
+
+# -------------------------------------- per-profile restart list ----
+# Units whose config the profile just overwrote (e.g. the beta crowsnest.conf
+# ships 1080p MJPEG for the bundled webcam) need one restart to pick it up.
+if [ -f "$PROFILE_DIR/restart.list" ]; then
+  while read -r u; do
+    case "$u" in ''|\#*) continue ;; esac
+    case " $DISABLED_UNITS " in *" $u "*) continue ;; esac
+    systemctl restart "$u" 2>/dev/null || echo "WARN: restart failed: $u"
+    echo "restarted (profile restart.list): $u"
+  done < "$PROFILE_DIR/restart.list"
+fi
+
+# ----------------------------- config-backup source repoint ----
+# A profile may repoint the daily config backup (beta-collector backs up
+# ~/kit-data, frames excluded, instead of printer_data/config).
+if [ -f "$PROFILE_DIR/backup.conf" ]; then
+  install -m 0644 "$PROFILE_DIR/backup.conf" /etc/a3dp-config-backup.conf
+  echo "config-backup repointed via $PROFILE_DIR/backup.conf"
 fi
 
 # --------------------------------------- final config state + restarts ----
@@ -192,10 +253,21 @@ EOF
   echo "fallback placeholder config written"
 fi
 
-systemctl restart nginx || true
-systemctl restart moonraker || true
-systemctl restart klipper || true
-
+# Final stack restarts — skipped for units the profile disable list turned
+# off (beta-collector: restarting klipper/moonraker/nginx would re-START them
+# and undo the disable).
+case " $DISABLED_UNITS " in
+  *" nginx "*)    : ;;
+  *) systemctl restart nginx || true ;;
+esac
+case " $DISABLED_UNITS " in
+  *" moonraker "*) : ;;
+  *) systemctl restart moonraker || true ;;
+esac
+case " $DISABLED_UNITS " in
+  *" klipper "*) : ;;
+  *) systemctl restart klipper || true ;;
+esac
 # Re-seed the Service macro group (belt-and-suspenders): the client-UI block
 # above ran before moonraker's final restart; the seed is idempotent.
 if [ "$CLIENT_FLAG" = "1" ] || [ -f "$CLIENT_MARKER" ]; then

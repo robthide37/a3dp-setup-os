@@ -9,6 +9,7 @@ picks ONE profile by hostname prefix, or by `A3DP_MACHINE=<profile>` in
 | `base/` | anything else | placeholder config only, no services |
 | `rift-525/` | `rift*`, `a3dp525*` | live-verified a3dp525 config; bed-gate daemon enabled via `services.list` |
 | `meter-idex/` | `meter*`, `a3dpmeter*` | meter kit config; MCU serials are `@A3DP_MCU_*@` tokens filled from `/dev/serial/by-id` at first boot (never guessed) |
+| `beta-collector/` | `kit*`, `beta*` | data-collection kit (beta program, docs/beta-data-kit.md in print-monitoring): not a printer — the printer stack is switched off via `disable.list`; camera lane + `beta-kit-collector` only |
 
 A profile dir carries:
 
@@ -16,7 +17,21 @@ A profile dir carries:
   (profile wins on conflicts)
 - `services.list` — one service name per line; each resolved from
   `/opt/a3dp/services/<name>/` (payload → `/home/pi/<name>`, unit → systemd,
-  `nginx/*.conf` → sites-available + enabled)
+  `nginx/*.conf` → sites-available + enabled). If the service dir ships a
+  `<name>.timer`, the timer is enabled+started instead of starting the unit
+  directly (timer-driven oneshot convention), and a `config.ini.example` in
+  the payload is seeded as `config.ini` when none exists.
+- `disable.list` — units disabled + stopped after the services install
+  (beta-collector: klipper, moonraker, klipper-mcu, mcu-flashd, bedgate,
+  nginx). Printer profiles ship an EMPTY list — no behavior change. The
+  final nginx/moonraker/klipper restart block skips disabled units (a
+  restart would re-START them).
+- `restart.list` — units restarted once after the profile config merge (when
+  the profile overwrote their live config; beta-collector restarts crowsnest
+  for the 1080p MJPEG conf).
+- `backup.conf` — optional repoint of the daily `a3dp-config-backup` agent
+  (installed to `/etc/a3dp-config-backup.conf`; beta-collector backs up
+  `~/kit-data` minus `frames/` instead of `printer_data/config`).
 - optional `flash/`, `nginx/` — profile extras
 
 Provenance: rift-525 config = live a3dp525 tree as captured during the

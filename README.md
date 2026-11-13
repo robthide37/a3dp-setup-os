@@ -75,8 +75,9 @@ and drop two files before first boot:
   `meter-idex`, or `base`) — the profile selector when Imager isn't there to
   set the hostname.
 - `a3dp-ssh.pub` with your public key(s), one per line — first boot installs
-  them and enables sshd (LF or CRLF line endings both work; keys are deduped,
-  comments/blank lines ignored).
+  them and enables sshd (LF or CRLF line endings both work; keys are deduped;
+  comments, blank and whitespace-only lines are ignored — a file with no key
+  lines leaves sshd untouched).
 
 ### Flash-time credentials (per-unit only — never in the image)
 

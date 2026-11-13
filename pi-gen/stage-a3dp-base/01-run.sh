@@ -22,3 +22,21 @@ chmod 440 /etc/sudoers.d/010_pi-nopasswd
 install -d -o pi -g pi -m 0755 \
   /home/pi/printer_data/config /home/pi/printer_data/comms \
   /home/pi/printer_data/logs /home/pi/printer_data/gcodes
+
+# ---- Tailscale: pre-installed, LOGGED OUT, zero auth material baked ----
+# Remote access ships per the README "Customer onboarding": the customer logs
+# the Pi into THEIR tailnet (sudo tailscale up) and/or shares the node to the
+# A3DP tailnet for support. Nothing here authenticates; tailscaled just idles
+# until `tailscale up`. (NOT in 00-packages: the official repo must be
+# configured first, and 00-packages runs before 01-run.sh.)
+install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://pkgs.tailscale.com/stable/debian/trixie.noarmor.gpg \
+  -o /etc/apt/keyrings/tailscale-archive-keyring.gpg
+cat > /etc/apt/sources.list.d/tailscale.list <<'EOF'
+deb [signed-by=/etc/apt/keyrings/tailscale-archive-keyring.gpg] https://pkgs.tailscale.com/stable/debian trixie main
+EOF
+apt-get update -o Dir::Etc::sourcelist="sources.list.d/tailscale.list" \
+  -o Dir::Etc::sourceparts="-" -o APT::Get::List-Cleanup="0"
+apt-get install -y --no-install-recommends tailscale
+# Fail-safe: never ship with auth state (paranoia — a fresh install has none).
+rm -rf /var/lib/tailscale/tailscaled.state

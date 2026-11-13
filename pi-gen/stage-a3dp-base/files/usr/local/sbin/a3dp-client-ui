@@ -1,0 +1,65 @@
+#!/bin/bash
+# a3dp-client-ui — toggle the A3DP client preset (Phase-1 phone UI) in the
+# deployed Mainsail theme. The preset is CSS-only: it hides operator-only
+# surfaces (console/heightmap/viewer/history/timelapse/machine pages, toolhead
+# + extruder + machine-settings + macro panels, topbar settings/power) so a
+# customer sees status/progress, temps, webcam, job start/pause/stop, e-stop.
+#
+# The managed block is marker-delimited so on/off is idempotent and the rest
+# of custom.css (A3DP skin) is never touched. Takes effect on browser reload.
+#
+#   sudo a3dp-client-ui on      # append/refresh the managed block
+#   sudo a3dp-client-ui off     # strip the managed block
+#   sudo a3dp-client-ui status
+set -u
+CFG=/home/pi/printer_data/config
+THEME="$CFG/.theme/custom.css"
+SRC=/opt/a3dp/shared/theme-client/client.css
+MARK_START="# === a3dp client preset (managed; toggle: sudo a3dp-client-ui off) ==="
+MARK_END="# === end a3dp client preset ==="
+
+strip_block() {
+  python3 - "$1" "$2" "$3" <<'PY'
+import sys
+path, start, end = sys.argv[1], sys.argv[2].strip(), sys.argv[3].strip()
+try:
+    lines = open(path).read().splitlines(True)
+except FileNotFoundError:
+    sys.exit(0)
+out, skip = [], False
+for ln in lines:
+    if ln.strip() == start:
+        skip = True
+        continue
+    if ln.strip() == end:
+        skip = False
+        continue
+    if not skip:
+        out.append(ln)
+open(path, "w").writelines(out)
+PY
+}
+
+case "${1:-status}" in
+  on)
+    [ -f "$SRC" ]   || { echo "ERROR: $SRC missing (base image broken?)"; exit 1; }
+    [ -f "$THEME" ] || { echo "ERROR: $THEME missing — no Mainsail theme deployed"; exit 1; }
+    strip_block "$THEME" "$MARK_START" "$MARK_END"
+    { echo "$MARK_START"; cat "$SRC"; echo "$MARK_END"; } >> "$THEME"
+    chown pi:pi "$THEME"
+    echo "client preset ENABLED (reload Mainsail / clear browser CSS cache)"
+    ;;
+  off)
+    [ -f "$THEME" ] || { echo "no theme deployed; nothing to do"; exit 0; }
+    strip_block "$THEME" "$MARK_START" "$MARK_END"
+    echo "client preset DISABLED"
+    ;;
+  status)
+    grep -qF "$MARK_START" "$THEME" 2>/dev/null && echo "client preset: ENABLED" \
+      || echo "client preset: disabled"
+    ;;
+  *)
+    echo "usage: a3dp-client-ui [on|off|status]" >&2
+    exit 2
+    ;;
+esac

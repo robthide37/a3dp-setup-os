@@ -69,6 +69,43 @@ if [ "$PROFILE" != "base" ]; then
   fi
 fi
 
+# ------------------------------------------------------- SSH key (escape hatch) ----
+# No credentials ship in the image and SSH is DISABLED at build (ENABLE_SSH=0).
+# Intended access: Pi Imager OS customization at flash time (customer's own
+# key/password). This block is the no-Imager escape hatch suggested on
+# t_aeaeb918: drop pubkey(s) as /boot/firmware/a3dp-ssh.pub (one per line) on
+# the boot partition and firstboot installs them + enables sshd. Still no
+# default credential — nothing happens unless the customer put the file there.
+SSH_PUB=/boot/firmware/a3dp-ssh.pub
+if [ -f "$SSH_PUB" ]; then
+  install -d -o pi -g pi -m 0700 "$PI/.ssh"
+  touch "$PI/.ssh/authorized_keys"
+  while IFS= read -r line; do
+    case "$line" in ''|\#*) continue ;; esac
+    grep -qxF "$line" "$PI/.ssh/authorized_keys" || echo "$line" >> "$PI/.ssh/authorized_keys"
+  done < "$SSH_PUB"
+  chown pi:pi "$PI/.ssh/authorized_keys"
+  chmod 0600 "$PI/.ssh/authorized_keys"
+  systemctl enable ssh 2>/dev/null || true
+  systemctl start ssh 2>/dev/null || true
+  echo "SSH public key(s) installed from $SSH_PUB; sshd enabled"
+fi
+
+# ---------------------------------------------------- client UI preset flag ----
+# Phase-1 phone UI (t_9cca9150): CSS-only curated Mainsail. Enabled by
+# A3DP_CLIENT_UI=1 in /boot/firmware/a3dp-machine.conf or by dropping a marker
+# file a3dp-client-ui on the boot partition. Togglable later without a
+# re-flash: sudo a3dp-client-ui on|off.
+CLIENT_MARKER=/boot/firmware/a3dp-client-ui
+CLIENT_FLAG=$(sed -n 's/^A3DP_CLIENT_UI=//p' "$CONF" 2>/dev/null | head -1 | tr -d '[:space:]')
+if [ "$CLIENT_FLAG" = "1" ] || [ -f "$CLIENT_MARKER" ]; then
+  if /usr/local/sbin/a3dp-client-ui on; then
+    echo "client UI preset enabled (flag: $([ -f "$CLIENT_MARKER" ] && echo marker-file || echo machine.conf))"
+  else
+    echo "WARN: client UI preset NOT applied (a3dp-client-ui failed)"
+  fi
+fi
+
 # ------------------------------------------------- MCU by-id token fill ----
 if [ "$PROFILE" = "meter-idex" ]; then
   python3 - <<'PYEOF'

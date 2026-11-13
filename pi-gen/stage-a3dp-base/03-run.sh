@@ -33,6 +33,7 @@ rm -rf /opt/a3dp/shared/A3dp/.git
 
 # ---- first-boot machine activation ----
 chmod 0755 /usr/local/sbin/a3dp-firstboot
+chmod 0755 /usr/local/sbin/a3dp-client-ui
 systemctl enable a3dp-firstboot.service
 
 # ---- config backup agent (daily, 14 rotating snapshots) ----

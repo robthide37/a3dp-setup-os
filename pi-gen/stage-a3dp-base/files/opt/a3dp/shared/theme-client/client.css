@@ -1,0 +1,39 @@
+/* =====================================================================
+   A3DP client preset — Phase-1 phone UI (t_9cca9150)
+   CSS-only curation for customer-facing units. Appended to
+   .theme/custom.css by `a3dp-client-ui on` (marker-delimited, togglable
+   without a re-flash). The customer keeps: status/progress, temps,
+   webcam, job start/pause/stop, emergency stop, job queue + g-code files,
+   announcements. Hidden: everything an operator needs and a client
+   shouldn't touch.
+   Selectors verified live against Mainsail on a3dp525 (2026-11-13):
+   - sidebar entries are anchors with stable hrefs
+   - dashboard panels carry stable classes (.panel.<name>)
+   - topbar icons are inline SVGs -> matched by path 'd' prefixes
+     (settings gear "M15.9,18.45...", power "M13,3H11V13H13V3...")
+   ===================================================================== */
+
+/* --- sidebar: operator-only pages --- */
+.v-navigation-drawer a[href="/console"],
+.v-navigation-drawer a[href="/heightmap"],
+.v-navigation-drawer a[href="/viewer"],
+.v-navigation-drawer a[href="/history"],
+.v-navigation-drawer a[href="/timelapse"],
+.v-navigation-drawer a[href="/config"] {
+  display: none !important;
+}
+
+/* --- dashboard: operator-only panels --- */
+.v-main .panel.toolhead-control-panel,
+.v-main .panel.extruder-control-panel,
+.v-main .panel.machine-settings-panel,
+.v-main .panel.miscellaneous-panel,
+.v-main .panel[class*="macrogroup"] {
+  display: none !important;
+}
+
+/* --- topbar: settings gear + host power (clients don't reconfigure/reboot) --- */
+#nav-header .v-btn:has(svg path[d^="M15.9,18.45"]),
+#nav-header .v-btn:has(svg path[d^="M13,3H11V13H13V3"]) {
+  display: none !important;
+}

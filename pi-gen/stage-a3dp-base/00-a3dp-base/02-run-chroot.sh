@@ -142,6 +142,10 @@ rm -f /etc/nginx/sites-enabled/default
 #   pi$ sudo CROWSNEST_UNATTENDED=1 make install  -> SUDO_USER=pi passes the
 # installer's not-as-root guard. Direct root run or `sudo -u pi make` sets
 # SUDO_USER=root/unset and aborts (CI failures 2026-11-13).
+# Root-run installers/venvs above leave root-owned dirs under /home/pi;
+# crowsnest creates ~/printer_data/systemd AS PI and dies on root-owned dirs
+# (CI failure 2026-11-13). Normalize before it runs.
+chown -R pi:pi /home/pi
 git clone https://github.com/mainsail-crew/crowsnest.git /home/pi/crowsnest
 chown -R pi:pi /home/pi/crowsnest
 sudo -u pi bash -c "cd /home/pi/crowsnest && \
@@ -167,3 +171,7 @@ CPUWeight=40
 EOF
 systemctl disable --now dphys-swapfile >/dev/null 2>&1 || true
 systemctl mask dphys-swapfile >/dev/null 2>&1 || true
+
+# Final ownership pass: root-run clones/installers above must end up pi-owned
+# (update managers, monitor, bedgate all run as pi).
+chown -R pi:pi /home/pi

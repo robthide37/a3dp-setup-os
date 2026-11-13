@@ -90,3 +90,6 @@ chown -R pi:pi /home/pi/printer_data /home/pi/klipper /home/pi/moonraker \
   /home/pi/moonraker-mcu-flasher /home/pi/moonraker-timelapse \
   /home/pi/crowsnest /home/pi/katapult 2>/dev/null || true
 chown -R pi:pi /home/pi/moonraker-env /home/pi/klippy-env 2>/dev/null || true
+
+# Final ownership pass (katapult cloned as root above).
+chown -R pi:pi /home/pi

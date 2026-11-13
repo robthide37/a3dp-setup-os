@@ -31,10 +31,17 @@ done
 
 # ---- build ----
 cd "$PIGEN_DIR"
-if command -v docker >/dev/null 2>&1; then
+HOST_ARCH="$(uname -m)"
+if [ "$HOST_ARCH" = "arm64" ] || [ "$HOST_ARCH" = "aarch64" ]; then
+  # Native arm64 build: pi-gen's docker wrapper uses an i386/debian base
+  # (x86-host/qemu layout) which cannot exec on an arm64 runner. Native is
+  # the supported arm64 path and needs root (sudo on CI).
+  echo "arm64 host ($HOST_ARCH): native pi-gen build"
+  sudo -E ./build.sh -c config
+elif command -v docker >/dev/null 2>&1; then
   CONTINUE=1 ./build-docker.sh -c config
 else
-  # native fallback (arm64 hosts without docker): pi-gen build.sh, needs root
+  # native fallback (x86_64 hosts without docker): slow under qemu, needs root
   sudo -E ./build.sh -c config
 fi
 

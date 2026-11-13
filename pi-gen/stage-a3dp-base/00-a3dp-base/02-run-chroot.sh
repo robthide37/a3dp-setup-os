@@ -78,6 +78,28 @@ cd /home/pi/moonraker
 install -o pi -g pi -m 0644 /opt/a3dp/shared/moonraker.conf \
   /home/pi/printer_data/config/moonraker.conf
 
+# moonraker.service: installed here, not by install-moonraker.sh (refuses
+# root). Same printer_data layout + venv conventions as klipper.service above.
+cat > /etc/systemd/system/moonraker.service <<'EOF'
+# A3DP fleet moonraker.service — printer_data layout.
+[Unit]
+Description=Moonraker API server for klippy
+After=network-online.target klipper.service
+Wants=network-online.target
+
+[Install]
+WantedBy=multi-user.target
+
+[Service]
+Type=simple
+User=pi
+RemainAfterExit=yes
+WorkingDirectory=/home/pi/moonraker
+ExecStart=/home/pi/moonraker-env/bin/python /home/pi/moonraker/moonraker/moonraker.py -c /home/pi/printer_data/config/moonraker.conf -l /home/pi/printer_data/logs/moonraker.log
+Restart=always
+RestartSec=10
+EOF
+
 # ---- moonraker components: mcu_flasher + timelapse ----
 git clone https://github.com/juliapythoncpp/moonraker-mcu-flasher.git /home/pi/moonraker-mcu-flasher
 ln -sf /home/pi/moonraker-mcu-flasher/moonraker/mcu_flasher.py \

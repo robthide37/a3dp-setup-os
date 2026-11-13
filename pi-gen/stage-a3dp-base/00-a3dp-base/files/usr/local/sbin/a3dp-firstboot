@@ -47,6 +47,20 @@ if [ ! -d "$PROFILE_DIR" ]; then
   PROFILE=base; PROFILE_DIR="$MACHINES/base"
 fi
 
+# ------------------------------------------------------ hostname override ----
+# Imager hostname customization is the usual path; raw-dd flashes can carry
+# A3DP_HOSTNAME= in a3dp-machine.conf instead. Applied directly (hostnamectl
+# is polkit-blocked for this service context) — no reboot needed.
+NEW_HOSTNAME=$(sed -n 's/^A3DP_HOSTNAME=//p' "$CONF" 2>/dev/null | head -1 | tr -d '[:space:]')
+if [ -n "$NEW_HOSTNAME" ] && [ "$NEW_HOSTNAME" != "$(hostname)" ]; then
+  echo "$NEW_HOSTNAME" > /etc/hostname
+  sed -i "s/^127\.0\.1\.1[[:space:]].*/127.0.1.1\t$NEW_HOSTNAME/" /etc/hosts
+  grep -q "127\.0\.1\.1[[:space:]]$NEW_HOSTNAME" /etc/hosts || \
+    printf '127.0.1.1\t%s\n' "$NEW_HOSTNAME" >> /etc/hosts
+  hostname "$NEW_HOSTNAME"
+  echo "hostname set to $NEW_HOSTNAME (A3DP_HOSTNAME in machine.conf)"
+fi
+
 # ------------------------------------------------------------ shared tree ----
 if [ -d "$SHARED/A3dp" ]; then
   cp -a "$SHARED/A3dp/." "$CFG/A3dp/" 2>/dev/null || true
@@ -237,6 +251,14 @@ if [ -f "$PROFILE_DIR/backup.conf" ]; then
   echo "config-backup repointed via $PROFILE_DIR/backup.conf"
 fi
 
+# ------------------------------------- ownership normalization ----
+# The merge above runs as root and cp -a preserves the root-owned /opt/a3dp
+# staging ownership — every deployed config file would land root:root and
+# first-boot/runtime edits need sudo (moonraker.conf was root:root on the
+# first rift-525 customer unit, .92 2026-11-13; firstboot log showed no
+# fallbacks because nothing failed — it just wasn't pi-writable).
+chown -R pi:pi "$PI/printer_data" 2>/dev/null || true
+
 # --------------------------------------- final config state + restarts ----
 if [ "$deploy_failed" = "1" ] || [ ! -s "$CFG/printer.cfg" ]; then
   cat > "$CFG/printer.cfg" <<'EOF'
@@ -252,6 +274,14 @@ max_accel: 1
 EOF
   echo "fallback placeholder config written"
 fi
+
+# ------------------------------------- ownership normalization ----
+# The merge above runs as root and cp -a preserves the root-owned /opt/a3dp
+# staging ownership — every deployed config file would land root:root and
+# first-boot/runtime edits need sudo (moonraker.conf was root:root on the
+# first rift-525 customer unit, .92 2026-11-13; firstboot log showed no
+# fallbacks because nothing failed — it just wasn't pi-writable).
+chown -R pi:pi "$PI/printer_data" 2>/dev/null || true
 
 # Final stack restarts — skipped for units the profile disable list turned
 # off (beta-collector: restarting klipper/moonraker/nginx would re-START them

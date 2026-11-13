@@ -10,7 +10,16 @@
 #    moonraker update entry comes from the canonical moonraker.conf instead
 #  - empty printer.cfg is invalid on Kalico — placeholder config shipped
 export HOME=/home/pi
-KLIPPER_PIN="84b3e373"          # fleet protocol pin: v2026.10.00-177-g84b3e373
+# Fleet protocol pin: v2026.11.00-30-g991e1823. Bumped from 84b3e373
+# (v2026.10.00-177) 2026-11-13 — REQUIRED for the rift-525 eddyprobe.cfg
+# (Cartographer variant): 84b3e373 ships no cartographer klippy module (klippy
+# halted in a restart loop with "Unknown pin chip name 'probe'" on the customer
+# unit .92) and the third-party Cartographer3D module cannot fill the gap
+# (registers lowercase 'probe', rejected by v2026.10.00-177 gcode.py — locally
+# reproduced). v2026.11.00-30 has the module in-tree and is the version the
+# live Rift (.219) host AND its MCUs run since the 2026-11-13 flash session
+# (t_51a93fd3) — host == MCU on every unit that runs the flashd full update.
+KLIPPER_PIN="991e1823e983a31d26b9264d2b6305fd64e3a09a"
 
 # ---- Kalico (fleet standard) ----
 git clone https://github.com/KalicoCrew/kalico.git /home/pi/klipper
@@ -105,6 +114,10 @@ git clone https://github.com/juliapythoncpp/moonraker-mcu-flasher.git /home/pi/m
 ln -sf /home/pi/moonraker-mcu-flasher/moonraker/mcu_flasher.py \
   /home/pi/moonraker/moonraker/components/mcu_flasher.py
 
+# moonraker-timelapse: component only (stdlib + tornado from moonraker-env —
+# no requirements.txt exists in the repo; the old pip line was a silent no-op
+# and a [update_manager timelapse] requirements: path to it failed the whole
+# extension at first boot on .92, 2026-11-13).
 git clone https://github.com/mainsail-crew/moonraker-timelapse.git /home/pi/moonraker-timelapse
 if [ -f /home/pi/moonraker-timelapse/component/timelapse.py ]; then
   ln -sf /home/pi/moonraker-timelapse/component/timelapse.py \
@@ -113,8 +126,25 @@ elif [ -f /home/pi/moonraker-timelapse/moonraker/components/timelapse.py ]; then
   ln -sf /home/pi/moonraker-timelapse/moonraker/components/timelapse.py \
     /home/pi/moonraker/moonraker/components/timelapse.py
 fi
-[ -f /home/pi/moonraker-timelapse/requirements.txt ] && \
-  /home/pi/moonraker-env/bin/pip install -r /home/pi/moonraker-timelapse/requirements.txt || true
+
+# ---- Cartographer3D probe plugin (klippy) ----
+# The rift-525 eddyprobe.cfg is the Cartographer variant ([cartographer] +
+# endstop_pin: probe:z_virtual_endstop). Kalico v2026.11 ships the plugin
+# LOADER (klippy/plugins/, tracked __init__.py, dir gitignored) but not the
+# plugin itself: the plugin is the pip package cartographer3d-plugin, loaded
+# through a 2-line shim klippy/plugins/cartographer.py (same shim the live
+# Rift .219 runs). There .219 carries 1.10.1.post2, which is NOT on PyPI —
+# the image pins the PyPI release 1.10.1 (2026-10-22). Without the plugin
+# klippy halts in a restart loop with "Unknown pin chip name 'probe'" (live,
+# rift-525 customer unit .92, 2026-11-13), and the OLD third-party module
+# route cannot fill the gap either (registers lowercase 'probe', rejected by
+# v2026.10.00-177's gcode.py — locally reproduced).
+# scipy: optional extra of the plugin (scan-model interpolation); baked to
+# match the live Rift env so CARTOGRAPHER_SCAN_CALIBRATE works out of the box.
+/home/pi/klippy-env/bin/pip install "cartographer3d-plugin==1.10.1" scipy
+cat > /home/pi/klipper/klippy/plugins/cartographer.py <<'EOF'
+from cartographer.extra import *
+EOF
 
 # ---- klipper host-mcu (Rift [mcu rpi]) ----
 cd /home/pi/klipper/scripts

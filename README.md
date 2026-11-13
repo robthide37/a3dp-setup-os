@@ -258,3 +258,27 @@ klipper.service with `-a` UDS socket, timesync via systemd-timesyncd only).
   enumeration at first boot, never guessed.
 - **rift-525 config** ships the unit-tuned SAVE_CONFIG (bed mesh, bed PID) of the
   reference a3dp525 as family defaults; re-tune per unit at bench.
+- **rift-525 with the Cartographer probe not connected**: the probe MCU is
+  `is_non_critical` — klippy reaches READY with a warning instead of halting.
+- **rift-525 MCU by-id names**: the config references the deterministic
+  product-string names (`usb-a3dp_stm32f446xx_main-if00`, `...g0b1xx_head0-if00`).
+  Boards flashed with stock product strings enumerate under different by-id
+  names and klippy waits loudly ("unable to open serial port") — flash the
+  identity firmware via the mcu-flashd full update (see the deterministic-flash
+  reference) rather than editing serials.
+- **First boot v0.1.3 config fixes** (from the first real-world flash, customer
+  unit 2026-11-13): `[gcode_shell_command]` sections moved to the klippy side
+  (`macros/a3dp-remote.cfg` — they are a klippy extra, not a Moonraker
+  component); `[job_history]` dropped (extension not shipped — Moonraker's
+  built-in `[history]` covers the Mainsail job list); `[update_manager
+  timelapse]` kept without the nonexistent `requirements:` path; the family
+  macro/support files (`variables.cfg` incl. `[save_variables]`, `compat.cfg`,
+  `mcu_flasher.cfg`, `euclid.cfg`, `save_variables.cfg`) ship in the rift-525
+  overlay; firstboot chowns `~/printer_data` to pi after the root-run merge;
+  `A3DP_HOSTNAME=` in `a3dp-machine.conf` sets the hostname at first boot
+  (hostnamectl is polkit-blocked); Kalico host pin bumped to
+  `v2026.11.00-30-g991e1823` — required for the Cartographer probe config
+  (v2026.10.00-177 has no cartographer module and rejects the lowercase
+  `probe` command registration), and the plugin ships as the pinned
+  `cartographer3d-plugin==1.10.1` pip package + 2-line
+  `klippy/plugins/cartographer.py` shim (same architecture as the live Rift).

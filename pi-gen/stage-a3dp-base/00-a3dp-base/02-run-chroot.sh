@@ -138,10 +138,19 @@ rm -f /etc/nginx/sites-enabled/default
 
 # ---- Crowsnest (camera) — UNATTENDED; exit-1 after successful install is a
 # known deviation (see file header), tolerated. ----
+# Installer runs AS PI (live-validated path); it invokes sudo internally for
+# the root steps (pi has NOPASSWD from stage 01). Without -u pi it leaks the
+# CI runner's $USER and creates /home/runner/... (CI failure 2026-11-13).
 git clone https://github.com/mainsail-crew/crowsnest.git /home/pi/crowsnest
+chown -R pi:pi /home/pi/crowsnest
 cd /home/pi/crowsnest
-env CROWSNEST_UNATTENDED=1 DEBIAN_FRONTEND=noninteractive make install || \
+sudo -u pi -H env USER=pi LOGNAME=pi HOME=/home/pi \
+  CROWSNEST_UNATTENDED=1 DEBIAN_FRONTEND=noninteractive make install || \
   echo "NOTE: crowsnest installer exit code tolerated (known unattended deviation)"
+
+# Crowsnest is required camera infrastructure: its service MUST exist.
+[ -f /etc/systemd/system/crowsnest.service ] || {
+  echo "FATAL: crowsnest.service missing after unattended install"; exit 1; }
 
 systemctl enable klipper.service moonraker.service nginx.service
 
@@ -149,6 +158,7 @@ systemctl enable klipper.service moonraker.service nginx.service
 # Camera stack + AI work nice'd down (klipper.service above gets the core +
 # Nice=-10). No SCHED_FIFO. No swap on SD-card units: SD swap ruins motion
 # timing and wears the card; zram is the follow-up if a unit ever needs it.
+mkdir -p /etc/systemd/system/crowsnest.service.d
 cat > /etc/systemd/system/crowsnest.service.d/10-a3dp-nice.conf <<'EOF'
 # A3DP: keep the camera stack out of klippy's way (t_9cca9150)
 [Service]

@@ -34,7 +34,20 @@ rm -rf /opt/a3dp/shared/A3dp/.git
 # ---- first-boot machine activation ----
 chmod 0755 /usr/local/sbin/a3dp-firstboot
 chmod 0755 /usr/local/sbin/a3dp-client-ui
+chmod 0755 /usr/local/sbin/a3dp-remote-setup
+chmod 0755 /usr/local/sbin/a3dp-monitor-restart
 systemctl enable a3dp-firstboot.service
+
+# ---- print-monitor key files: Mainsail-editable via symlinks (Rob-approved) ----
+# The monitor/confirm-listener read /etc/a3dp-print-monitor/{llamaswap.key,
+# confirm.token}; those are symlinks into ~/printer_data/config/a3dp/ so a
+# customer pastes the two values with the Mainsail file manager (no SSH) and
+# runs the RESTART_MONITOR macro. Perms preserved on the target files; nothing
+# baked — the key files don't exist until the customer/support creates them.
+install -d -o pi -g pi -m 0755 /home/pi/printer_data/config/a3dp
+install -d -m 0755 /etc/a3dp-print-monitor
+ln -sf /home/pi/printer_data/config/a3dp/llamaswap.key /etc/a3dp-print-monitor/llamaswap.key
+ln -sf /home/pi/printer_data/config/a3dp/confirm.token /etc/a3dp-print-monitor/confirm.token
 
 # ---- config backup agent (daily, 14 rotating snapshots) ----
 cat > /usr/local/sbin/a3dp-config-backup <<'EOF'

@@ -17,6 +17,11 @@ moonraker_url = http://192.168.50.219:7125
 evaluate_states = printing
 
 [vlm]
+# VLM endpoint MUST be reachable from this unit:
+#  - A3DP-own fleet units on the shop LAN: the llama-swap address below.
+#  - Customer units over Tailscale: use the tailnet-reachable endpoint (the
+#    A3DP relay node shared into the customer's tailnet) — NEVER a LAN IP.
+#    See README "Customer onboarding" §4 for the verified topology.
 endpoint = http://192.168.50.232:8080/v1/chat/completions
 # brain-glm = alias of glm53-qad2 = same upstream as the loaded a3dp-brain
 # lane -> no llama-swap lane swap, no eviction of the main brain.

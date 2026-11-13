@@ -37,6 +37,12 @@ WantedBy=multi-user.target
 Type=simple
 User=pi
 RemainAfterExit=yes
+# Rob-approved performance defaults (t_9cca9150): dedicated core + elevated
+# priority for klippy so motion timing never competes with nginx/monitor/
+# tailscale; verified target = zero "Timer too close" warnings on a test
+# print (bench-flash check, open in runbooks/a3dp-image-pipeline.md).
+CPUAffinity=3
+Nice=-10
 WorkingDirectory=/home/pi/klipper
 ExecStart=/home/pi/klippy-env/bin/python /home/pi/klipper/klippy/klippy.py /home/pi/printer_data/config/printer.cfg -a /home/pi/printer_data/comms/klippy.sock -l /home/pi/printer_data/logs/klippy.log
 Restart=always
@@ -112,3 +118,16 @@ env CROWSNEST_UNATTENDED=1 DEBIAN_FRONTEND=noninteractive make install || \
   echo "NOTE: crowsnest installer exit code tolerated (known unattended deviation)"
 
 systemctl enable klipper.service moonraker.service nginx.service
+
+# ---- host performance defaults (t_9cca9150, Rob-approved direction) ----
+# Camera stack + AI work nice'd down (klipper.service above gets the core +
+# Nice=-10). No SCHED_FIFO. No swap on SD-card units: SD swap ruins motion
+# timing and wears the card; zram is the follow-up if a unit ever needs it.
+cat > /etc/systemd/system/crowsnest.service.d/10-a3dp-nice.conf <<'EOF'
+# A3DP: keep the camera stack out of klippy's way (t_9cca9150)
+[Service]
+Nice=10
+CPUWeight=40
+EOF
+systemctl disable --now dphys-swapfile >/dev/null 2>&1 || true
+systemctl mask dphys-swapfile >/dev/null 2>&1 || true

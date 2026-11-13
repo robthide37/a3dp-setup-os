@@ -1,0 +1,18 @@
+#!/bin/bash
+# a3dp-monitor-restart — customer-facing restart of the AI monitor services
+# after the key files were pasted in via the Mainsail file manager
+# (~/printer_data/config/a3dp/{llamaswap.key,confirm.token} — symlinked from
+# /etc/a3dp-print-monitor/). Called by the RESTART_MONITOR gcode macro.
+# Services ship disabled; restart only what is enabled.
+set -u
+for u in a3dp-print-monitor.timer a3dp-confirm-listener.service; do
+  if systemctl is-enabled "$u" >/dev/null 2>&1; then
+    systemctl restart "$u" && echo "restarted $u" || echo "WARN: restart $u failed"
+  else
+    echo "$u not enabled (configure config.ini + key files first — see README)"
+  fi
+done
+if systemctl is-enabled a3dp-print-monitor.timer >/dev/null 2>&1; then
+  systemctl start a3dp-print-monitor.timer && echo "monitor timer started"
+fi
+echo "done"

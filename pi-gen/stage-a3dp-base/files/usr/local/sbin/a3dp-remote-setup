@@ -1,0 +1,43 @@
+#!/bin/bash
+# a3dp-remote-setup — join a tailnet WITHOUT SSH (t_9cca9150, Rob-approved).
+# Called by the REMOTE_SETUP gcode macro (gcode_shell_command) from Mainsail
+# or KlipperScreen. Tailscale ships logged out; this starts `tailscale up` in
+# the background, grabs the auth URL, and surfaces it where a customer can
+# reach it without SSH:
+#   - klippy console (gcode_shell_command verbose output)
+#   - ~/printer_data/gcodes/tailscale-auth-url.txt (visible in the Mainsail
+#     Jobs/files list on the phone UI)
+#   - M117 status line (short pointer)
+set -u
+URLFILE=/home/pi/printer_data/gcodes/tailscale-auth-url.txt
+LOG=/var/log/a3dp-remote-setup.log
+
+state=$(tailscale status --json 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin).get('BackendState',''))" 2>/dev/null || echo unknown)
+if [ "$state" = "Running" ]; then
+  IP=$(tailscale ip -4 2>/dev/null | head -1)
+  NAME=$(tailscale status --json 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin).get('Self',{}).get('DNSName','').strip('.'))" 2>/dev/null)
+  echo "ALREADY CONNECTED: http://${NAME:-<tailscale-name>} (ip ${IP:-unknown})"
+  echo "Already connected: $NAME" > "$URLFILE"
+  chown pi:pi "$URLFILE" 2>/dev/null || true
+  exit 0
+fi
+
+# background the login so we never block the klippy shell-command thread
+rm -f /tmp/a3dp-ts-login.log
+nohup tailscale up --accept-dns=false > /tmp/a3dp-ts-login.log 2>&1 &
+for i in $(seq 1 20); do
+  sleep 1
+  URL=$(grep -oE 'https://login\.tailscale\.com/a/[A-Za-z0-9]+' /tmp/a3dp-ts-login.log | head -1)
+  [ -n "$URL" ] && break
+done
+if [ -z "${URL:-}" ]; then
+  echo "NO AUTH URL YET — see /tmp/a3dp-ts-login.log (retry REMOTE_SETUP in a minute)"
+  cat /tmp/a3dp-ts-login.log >> "$LOG" 2>/dev/null || true
+  exit 1
+fi
+printf '%s\n' "Tailscale auth URL (open on a device signed into YOUR tailnet," \
+  "approve the device, then Mainsail is reachable at this printer's" \
+  "Tailscale name):" "$URL" > "$URLFILE"
+chown pi:pi "$URLFILE"
+echo "AUTH URL: $URL"
+echo "Also written to the Jobs list file: tailscale-auth-url.txt"

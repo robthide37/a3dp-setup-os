@@ -23,6 +23,7 @@ Base image contents (everything is baked in, nothing is flashed by hand):
 | AI stack (staged) | `a3dp-bedgate` daemon + print monitor — installed, **disabled**; enabled per machine profile |
 | Templates | DHT drybox MQTT template at `/opt/a3dp/templates/dht-mqtt/` (never baked/installed) |
 | Config backup | daily `a3dp-config-backup.timer` (printer_data/config → 14 rotating snapshots) |
+| Host performance | klippy pinned to a dedicated core (`CPUAffinity=3`) + `Nice=-10`; crowsnest/ustreamer + AI timers nice'd down; **no swap** (dphys-swapfile disabled — SD swap ruins motion timing) |
 
 Machine profiles shipped in the image (first boot selects ONE):
 
@@ -62,6 +63,20 @@ Machine profiles shipped in the image (first boot selects ONE):
    `/opt/a3dp/templates/dht-mqtt/README.md`), point crowsnest at the unit's
    camera (`/dev/v4l/by-id/`).
 
+### Flash-time credentials (per-unit only — never in the image)
+
+The public image ships with **zero credentials**: `pi` locked, SSH off. Two
+per-unit exceptions, both applied at flash/bake time for a *specific* unit,
+never in the released image:
+
+- **Customer-standard password**: a customer whose fleet standardizes on a
+  password (e.g. `pi=<their password>`) gets it set in the pre-bake/flash
+  step for their cards (Imager customization or a post-flash `passwd`).
+- **A3DP fleet cards**: the fleet SSH key is injected post-flash (existing
+  fleet convention).
+
+Anything baked this way lives only on that unit's card.
+
 ### Overriding the profile without Imager
 
 Drop a file `a3dp-machine.conf` on the boot partition containing
@@ -82,15 +97,16 @@ LAN + Tailscale CGNAT sources only; it is not exposed to the internet).
 ### 2. Remote access — customer's own tailnet (recommended)
 
 Tailscale is pre-installed but **logged out** — the image carries zero auth
-material. The customer connects the printer to *their* tailnet:
-
-```bash
-sudo tailscale up
-```
-
-…open the printed auth URL, sign in, done (~1 min). The printer is then
+material. The customer joins *their* tailnet without SSH, straight from the
+printer UI: **Macros → `REMOTE_SETUP`** (Mainsail) or the same macro on
+KlipperScreen. The macro starts the login in the background and prints the
+auth URL to the console **and** writes it to `tailscale-auth-url.txt` in the
+Jobs list — the customer opens that URL on a device signed into their
+Tailscale account and approves the printer (~1 min). The printer is then
 reachable from all their devices at its Tailscale name, e.g.
 `http://a3dp-rift1:80/` — Mainsail and the camera work unchanged.
+
+(SSH alternative: `sudo tailscale up` on the unit does the same.)
 
 ### 3. Support access — share the node to the A3DP tailnet
 
@@ -116,21 +132,30 @@ only when the customer opts in. Two pieces:
 - **Bed gate (`a3dp-bedgate`)** — rift-525 profile enables the daemon at first
   boot, but it is fail-open and dormant until a detection lane feeds it
   verdicts (KB `GATE-CONTRACT.md`). Safe either way; no credentials involved.
-- **Print monitor** — needs the llama-swap API key + confirm token, dropped by
-  A3DP post-install as `/etc/a3dp-print-monitor/{llamaswap.key,confirm.token}`
-  (0600, never baked), plus the unit's `config.ini` endpoints, then
-  `sudo systemctl enable --now a3dp-print-monitor.timer`
-  (KB print-monitor key-file contract).
+- **Print monitor** — needs the llama-swap API key + confirm token. Both are
+  **never baked**; they land as Mainsail-editable files:
+  1. Customer (or A3DP support) opens the Mainsail file manager → `a3dp/`
+     folder and creates/pastes two values: `llamaswap.key` and
+     `confirm.token` (the services read them through symlinks from
+     `/etc/a3dp-print-monitor/` — perms preserved, nothing committed).
+  2. Run the **`RESTART_MONITOR`** macro (Mainsail button / KlipperScreen) —
+     it restarts the enabled monitor services. Done, no SSH.
+  The VLM endpoint in `/home/pi/monitor/config.ini` must be the
+  **tailnet-reachable** llama-swap address (see the topology note below) —
+  never a LAN IP, which is unroutable from a customer unit.
 
 **Topology constraint (verified):** because of the one-way share above, the
 customer's Pi cannot call A3DP's llama-swap VLM lane directly. Detection
 either (a) runs through an A3DP **relay node shared back into the customer's
-tailnet** (same pattern already live for Brandon's devices → ai-services
-grants), or (b) moves the VLM call to the A3DP side (pull the snapshot +
-push verdicts back via Moonraker — both are inbound to the printer, which the
-share permits). Option (b) needs monitor changes; until one of the two lands
-(pinned to the printer-gateway work, t_9b92f656), AI detection on customer
-units is **documented, not yet enabled**.
+tailnet** — the Pi then calls that relay's Tailscale address (same pattern
+already live for Brandon's devices → ai-services grants), or (b) moves the
+VLM call to the A3DP side (pull the snapshot + push verdicts back via
+Moonraker — both are inbound to the printer, which the share permits). Option
+(b) needs monitor changes; until one of the two lands (pinned to the
+printer-gateway work, t_9b92f656), AI detection on customer units is
+**documented, not yet enabled**. Enabling the monitor services on an opted-in
+unit is a support step over the tailnet SSH path:
+`sudo systemctl enable a3dp-print-monitor.timer a3dp-confirm-listener.service`.
 
 ### 5. Support path summary
 

@@ -32,8 +32,11 @@
   display: none !important;
 }
 
-/* --- topbar: settings gear + host power (clients don't reconfigure/reboot) --- */
-#nav-header .v-btn:has(svg path[d^="M15.9,18.45"]),
-#nav-header .v-btn:has(svg path[d^="M13,3H11V13H13V3"]) {
+/* --- topbar: settings gear + host power (clients don't reconfigure/reboot) ---
+   The topbar is a real <header class="topbar"> (verified live 2026-11-13);
+   icons are inline SVGs, matched by path prefixes. Scoped to header so
+   per-panel config buttons are untouched. */
+header .v-btn:has(svg path[d^="M15.9,18.45"]),
+header .v-btn:has(svg path[d^="M13,3H11V13H13V3"]) {
   display: none !important;
 }

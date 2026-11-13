@@ -1,8 +1,8 @@
 # pi-gen config for the A3DP fleet image.
 # Base: Raspberry Pi OS Lite 64-bit (trixie) — boots Pi 4 and Pi 5.
+# Build requires pi-gen's arm64 branch (master hardcodes --arch armhf).
 IMG_NAME='a3dp-image'
 RELEASE='trixie'
-TARGET_ARCH=64
 
 FIRST_USER_NAME='pi'
 # FIRST_USER_PASS: generated at build time by build.sh (required by pi-gen

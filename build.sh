@@ -10,7 +10,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PIGEN_DIR="${HERE}/pigen-upstream"
 PIGEN_REPO="https://github.com/RPi-Distro/pi-gen.git"
-PIGEN_PIN="6e3ff62bfd9c690a6a3d1d7de259d5e0af40cb78"   # pinned for reproducible builds
+PIGEN_PIN="c0d2c9f2cffc08bc56850b0a3eb23178f4226e8a"   # arm64 branch head 2026-11-06: bootstraps arm64 (master hardcodes --arch armhf)
 
 # ---- fetch pi-gen at the pin ----
 if [ ! -d "$PIGEN_DIR/.git" ]; then

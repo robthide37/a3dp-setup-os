@@ -37,6 +37,16 @@ if [ "$HOST_ARCH" = "arm64" ] || [ "$HOST_ARCH" = "aarch64" ]; then
   # (x86-host/qemu layout) which cannot exec on an arm64 runner. Native is
   # the supported arm64 path and needs root (sudo on CI).
   echo "arm64 host ($HOST_ARCH): native pi-gen build"
+  if [ -x /usr/bin/apt-get ] && command -v sudo >/dev/null 2>&1; then
+    # pi-gen depends-list (repo pin): quilt parted coreutils qemu-user-binfmt
+    # debootstrap zerofree zip dosfstools e2fsprogs libcap2-bin grep rsync
+    # xz-utils curl xxd file git kmod bc gpg pigz arch-test
+    sudo apt-get -y update
+    sudo DEBIAN_FRONTEND=noninteractive apt-get -y install --no-install-recommends \
+      quilt parted coreutils qemu-user-binfmt debootstrap zerofree zip \
+      dosfstools e2fsprogs libcap2-bin rsync xz-utils curl xxd file git \
+      kmod bc gpg pigz arch-test
+  fi
   sudo -E ./build.sh -c config
 elif command -v docker >/dev/null 2>&1; then
   CONTINUE=1 ./build-docker.sh -c config

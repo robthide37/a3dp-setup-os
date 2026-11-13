@@ -82,6 +82,20 @@ never in the released image:
 
 Anything baked this way lives only on that unit's card.
 
+### Support access (baked in, opt-out for customers)
+
+The image ships a dedicated **`a3dp-support`** user (no sudo, shell only) whose
+`authorized_keys` contains A3DP's support public key
+(`a3dp-image-support-20261113`). It is inert unless SSH is enabled (flash-time
+choice); day-to-day support rides Tailscale SSH. Customers can revoke it:
+
+```
+sudo deluser a3dp-support
+```
+
+The private half of the key never ships — it lives in A3DP's secrets store
+only, never in the fleet key or any image artifact.
+
 ### Overriding the profile without Imager
 
 Drop a file `a3dp-machine.conf` on the boot partition containing

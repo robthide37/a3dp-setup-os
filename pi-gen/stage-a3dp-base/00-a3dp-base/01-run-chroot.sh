@@ -18,6 +18,21 @@ systemctl enable systemd-timesyncd
 echo 'pi ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/010_pi-nopasswd
 chmod 440 /etc/sudoers.d/010_pi-nopasswd
 
+# ---- a3dp-support user (Rob-approved 2026-11-13) ----
+# Dedicated paid-client support access: public key baked here, private half
+# lives in /opt/data/.secrets/ssh/ (never the fleet hermes key). No sudo —
+# support work rides Tailscale SSH; removal path for customers:
+#   sudo deluser a3dp-support  (and remove the line in /etc/ssh or the unit)
+if ! id a3dp-support >/dev/null 2>&1; then
+  useradd -m -s /bin/bash -c "A3DP support access" a3dp-support
+fi
+install -d -o a3dp-support -g a3dp-support -m 0700 /home/a3dp-support/.ssh
+cat > /home/a3dp-support/.ssh/authorized_keys <<'EOF'
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBRuSlitgK9tm4HfQAIkgmyulbTrUS5oVLPAJ8w+qys0 a3dp-image-support-20261113
+EOF
+chown a3dp-support:a3dp-support /home/a3dp-support/.ssh/authorized_keys
+chmod 0600 /home/a3dp-support/.ssh/authorized_keys
+
 # ---- run-everything-as-pi home layout ----
 install -d -o pi -g pi -m 0755 \
   /home/pi/printer_data/config /home/pi/printer_data/comms \

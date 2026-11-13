@@ -62,12 +62,16 @@ max_velocity: 1
 max_accel: 1
 EOF
 
-# ---- Moonraker ----
+# ---- Moonraker (pinned for image determinism) ----
+MOONRAKER_PIN="b559b9a81161f958a43c2f527b6ad96f73310d5d"
 git clone https://github.com/Arksine/moonraker.git /home/pi/moonraker
+git -C /home/pi/moonraker checkout --detach "$MOONRAKER_PIN"
 cd /home/pi/moonraker
+# install-moonraker.sh refuses root (it would create the pi service/dirs);
+# the chroot build is root, so units/dirs are laid out by this stage instead.
 ./scripts/install-moonraker.sh || true
 [ -x /home/pi/moonraker-env/bin/python ] || python3 -m venv /home/pi/moonraker-env
-/home/pi/moonraker-env/bin/pip install -r /home/pi/moonraker/requirements.txt
+/home/pi/moonraker-env/bin/pip install -r /home/pi/moonraker/scripts/moonraker-requirements.txt
 
 # Canonical fleet moonraker.conf (replaces the generated one — the generated
 # conf lacks [authorization] entirely: localhost got 401, live 2026-10-31).

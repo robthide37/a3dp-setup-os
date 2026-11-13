@@ -5,7 +5,8 @@ RELEASE='trixie'
 TARGET_ARCH=64
 
 FIRST_USER_NAME='pi'
-FIRST_USER_PASS=''
+# FIRST_USER_PASS: generated at build time by build.sh (required by pi-gen
+# when DISABLE_FIRST_BOOT_USER_RENAME=1); pi account locked in stage-a3dp-final.
 DISABLE_FIRST_BOOT_USER_RENAME=1
 
 STAGE_LIST='stage0 stage1 stage2 stage-a3dp-base stage-a3dp-final'

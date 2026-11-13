@@ -24,6 +24,14 @@ cp -r "$HERE/pi-gen/stage-a3dp-base" "$PIGEN_DIR/"
 cp -r "$HERE/pi-gen/stage-a3dp-final" "$PIGEN_DIR/"
 cp "$HERE/pi-gen/config.a3dp" "$PIGEN_DIR/config"
 
+# pi-gen requires FIRST_USER_PASS when DISABLE_FIRST_BOOT_USER_RENAME=1.
+# Generate a throwaway random value at build time: the pi account is locked in
+# stage-a3dp-final and no fixed credential is ever committed to the repo.
+if ! grep -q '^FIRST_USER_PASS=' "$PIGEN_DIR/config"; then
+  BUILD_PASS="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  printf "FIRST_USER_PASS='%s'\n" "$BUILD_PASS" >> "$PIGEN_DIR/config"
+fi
+
 # only the final stage produces an image
 for s in stage0 stage1 stage2 stage-a3dp-base; do
   touch "$PIGEN_DIR/$s/SKIP_IMAGES"

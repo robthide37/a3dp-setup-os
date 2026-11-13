@@ -1,0 +1,645 @@
+#!/usr/bin/env python3
+"""a3dp-mcu-flash — self-contained MCU flasher for A3DP kit units.
+
+Klipper-independent recovery path: flashes rp2040 boards in BOOTSEL mode
+(mount / copy UF2 / umount over USB mass storage) with NO klipper, NO
+moonraker, NO klippy involved. Complements the klippy FLASH_MCU macro happy
+path (moonraker-mcu-flasher), which requires a working print stack.
+
+Subcommands:
+  enumerate                  list BOOTSEL + katapult-bootloader + USB-serial MCU boards (JSON)
+  flash <board|serial> <uf2> flash a BOOTSEL or katapult-bootloader board from a UF2 file
+  serve [--port N] [--cfg F] run the web UI (default 127.0.0.1:7130)
+
+Stdlib only (Python >= 3.9) — safe to drop on a bare Pi OS Lite image.
+Board-name mapping comes from the repo's existing A3dp/flash mcus.ini
+convention (sections [name] whose command carries a /dev/serial/by-id path).
+"""
+
+import argparse
+import configparser
+import fnmatch
+import json
+import os
+import re
+import shutil
+import struct
+import subprocess
+import sys
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+# usb ids of interest
+VID_RPI = "2e8a"
+PID_RP2_BOOT = "0003"      # RP2 ROM bootloader, USB mass storage
+VID_KLIPPER = "1d50"
+# PID varies (614e for klipper CDC); any 1d50:* serial entry is treated as MCU
+PID_KATAPULT = "6177"       # katapult CDC bootloader (Arksine/katapult flashtool.py)
+
+MOUNTPOINT = "/run/a3dp-mcu-flash"
+UF2_MAGIC0 = 0x0A324655   # "UF2\n" LE
+UF2_MAGIC1 = 0x9E5D5157   # UF2 header magic1 (RP2040 family ID 0xE48BFF56 is a separate field at block offset 28)
+BY_ID_RE = re.compile(r"usb-.*_([0-9A-Fa-f]{8,16})-if00")
+
+
+# ---------------------------------------------------------------- sysfs / sys
+
+def _read(path):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def find_bootsel_volumes(sysfs="/sys"):
+    """Return [{'usb_dev', 'block_dev'}] for every rp2040 board in BOOTSEL mode.
+
+    The RP2 ROM bootloader enumerates as VID 2e8a:0003 USB mass storage
+    (FAT volume, no partition table). Discovery: match usb devices under
+    sysfs by vid/pid, then find the block device whose sysfs realpath sits
+    under that usb device directory.
+    """
+    bus = os.path.join(sysfs, "bus/usb/devices")
+    bootsel = []
+    if not os.path.isdir(bus):
+        return bootsel
+    targets = []
+    for name in sorted(os.listdir(bus)):
+        dev = os.path.join(bus, name)
+        if not os.path.isdir(dev) or ":" not in name:
+            # skip interface dirs (contain ':') and root hubs
+            if ":" in name:
+                continue
+            if _read(os.path.join(dev, "idVendor")) == VID_RPI and \
+               _read(os.path.join(dev, "idProduct")) == PID_RP2_BOOT:
+                targets.append(os.path.realpath(dev))
+    if not targets:
+        return bootsel
+    block_dir = os.path.join(sysfs, "block")
+    if not os.path.isdir(block_dir):
+        return bootsel
+    for blk in sorted(os.listdir(block_dir)):
+        real = os.path.realpath(os.path.join(block_dir, blk))
+        for t in targets:
+            if real.startswith(t + os.sep):
+                # prefer partition devices (e.g. sda1) over whole-disk (sda):
+                # the FAT volume lives on the partition when one exists.
+                blk_dir = os.path.join(block_dir, blk)
+                try:
+                    parts = sorted(d for d in os.listdir(blk_dir)
+                                   if d.startswith(blk) and d[-1].isdigit())
+                except OSError:
+                    parts = []
+                for devname in (parts or [blk]):
+                    bootsel.append({"usb_dev": os.path.basename(t),
+                                    "block_dev": "/dev/" + devname,
+                                    "label": _read(os.path.join(real, "label")) or "RPI-RP2"})
+    # prefer partition devices (e.g. sda1) over whole-disk (sda) for mount
+    if bootsel and any(b["block_dev"][-1].isdigit() for b in bootsel):
+        bootsel = [b for b in bootsel if b["block_dev"][-1].isdigit()]
+    return bootsel
+
+
+def classify_serial(name, vidpid=""):
+    """kind of a /dev/serial/by-id entry: katapult | klipper | other.
+    katapult = board sitting in the katapult bootloader (flashable via
+    katapult's flashtool.py); klipper = board running Klipper CDC."""
+    low = name.lower()
+    if "katapult" in low or vidpid == f"{VID_KLIPPER}:{PID_KATAPULT}":
+        return "katapult"
+    if "klipper" in low:
+        return "klipper"
+    return "other"
+
+
+def list_serial_mcus(by_id_dir="/dev/serial/by-id"):
+    """Return [{'name'(by-id filename), 'chipid', 'tty', 'vid:pid', 'kind'}] for
+    every USB serial device; chipid extracted from the by-id filename."""
+    out = []
+    if not os.path.isdir(by_id_dir):
+        return out
+    for name in sorted(os.listdir(by_id_dir)):
+        m = BY_ID_RE.search(name)
+        try:
+            tty = os.path.basename(os.readlink(os.path.join(by_id_dir, name)))
+        except OSError:
+            tty = os.path.basename(os.path.realpath(os.path.join(by_id_dir, name)))
+        # sysfs anchor: /sys/class/tty/<tty>/device = the USB interface dir;
+        # its parent is the usb device dir carrying idVendor/idProduct.
+        vidpid = ""
+        cur = os.path.realpath(os.path.join("/sys/class/tty", tty, "device"))
+        for _ in range(4):
+            cur = os.path.dirname(cur)
+            v = _read(os.path.join(cur, "idVendor"))
+            if v:
+                vidpid = f"{v}:{_read(os.path.join(cur, 'idProduct'))}"
+                break
+        out.append({"name": name, "chipid": m.group(1) if m else None,
+                    "tty": tty, "vid:pid": vidpid,
+                    "kind": classify_serial(name, vidpid)})
+    return out
+
+
+# ------------------------------------------------------------------ mcus.ini
+
+def parse_mcus_ini(path):
+    """{board_name: chipid-or-serial-tail} from A3dp/flash mcus.ini sections.
+    Accepts action_command/flash_cmd lines carrying /dev/serial/by-id paths."""
+    boards = {}
+    if not path or not os.path.isfile(path):
+        return boards
+    cp = configparser.ConfigParser(strict=False)
+    cp.read(path)
+    for sec in cp.sections():
+        for _, val in cp.items(sec):
+            m = re.search(r"/dev/serial/by-id/(\S+)", val)
+            if m:
+                mm = BY_ID_RE.search(m.group(1))
+                boards[sec] = mm.group(1) if mm else m.group(1)
+                break
+    return boards
+
+
+def label_serials(serials, boards):
+    """Attach board names from the mcus.ini chipid map to serial entries."""
+    rev = {v: k for k, v in boards.items()}
+    for s in serials:
+        s["board"] = rev.get(s["chipid"])
+    return serials
+
+
+# --------------------------------------------------------------------- uf2
+
+def validate_uf2(path):
+    """Cheap structural check: first 512-byte block carries the UF2 magics.
+    Prevents flashing a .bin/.elf renamed .uf2."""
+    try:
+        with open(path, "rb") as f:
+            hdr = f.read(512)
+    except OSError as e:
+        return False, f"unreadable: {e}"
+    if len(hdr) < 512:
+        return False, "file smaller than one UF2 block"
+    m0, m1 = struct.unpack_from("<II", hdr, 0)
+    if m0 != UF2_MAGIC0 or m1 != UF2_MAGIC1:
+        return False, "missing UF2 block magic — is this really a .uf2?"
+    return True, "ok"
+
+
+def scan_firmware_dir(fw_dir):
+    """All *.uf2 under fw_dir (recursive), as [{'path', 'board', 'file'}].
+    Board = leading token before '-' or '_' (e.g. rp2040main-v1.2.uf2)."""
+    out = []
+    if not fw_dir or not os.path.isdir(fw_dir):
+        return out
+    for root, _, files in os.walk(fw_dir):
+        for fn in sorted(files):
+            if not fn.lower().endswith(".uf2"):
+                continue
+            board = re.split(r"[-_]", fn, maxsplit=1)[0].lower()
+            out.append({"path": os.path.join(root, fn), "file": fn, "board": board})
+    return out
+
+
+def firmware_for_board(fw_dir, board):
+    return [f for f in scan_firmware_dir(fw_dir)
+            if f["board"] == board.lower()
+            or fnmatch.fnmatch(os.path.basename(f["file"]).lower(), board.lower() + "*.uf2")]
+
+
+# ------------------------------------------------------------------- flash
+
+def _run(cmd, **kw):
+    """subprocess.run wrapper; adds sudo when not root and cmd needs it."""
+    if os.geteuid() != 0 and cmd[0] in ("mount", "umount"):
+        cmd = ["sudo"] + cmd
+    return subprocess.run(cmd, capture_output=True, text=True, **kw)
+
+
+def flash_boot(uf2_path, block_dev, mountpoint=MOUNTPOINT):
+    """Mount a BOOTSEL-mode board's FAT volume, write the UF2, unmount.
+    Does NOT wait for re-enumeration (see wait_reenumerate) — separate so the
+    sequence is testable against a loop-mounted FAT image."""
+    ok, why = validate_uf2(uf2_path)
+    if not ok:
+        return False, f"UF2 check failed: {why}"
+    os.makedirs(mountpoint, exist_ok=True)
+    r = _run(["mount", "-t", "vfat", "-o", "shortname=mixed,uid=0,gid=0",
+              block_dev, mountpoint])
+    if r.returncode != 0:
+        return False, f"mount {block_dev} failed: {r.stderr.strip()}"
+    try:
+        dest = os.path.join(mountpoint, "firmware.uf2")
+        shutil.copyfile(uf2_path, dest)
+        with open(dest, "rb") as f:
+            os.fsync(f.fileno())
+        subprocess.run(["sync"], check=False)
+        # RP2 bootloader ejects itself after the write; umount may race it.
+        r = _run(["umount", mountpoint])
+        if r.returncode != 0 and "not mounted" not in r.stderr:
+            time.sleep(1.0)
+            r = _run(["umount", mountpoint])
+            if r.returncode != 0 and "not mounted" not in r.stderr:
+                return False, f"umount failed: {r.stderr.strip()}"
+    finally:
+        if os.path.ismount(mountpoint):
+            _run(["umount", "-f", mountpoint])
+    return True, f"flashed {os.path.basename(uf2_path)} -> {block_dev} (board reboots on its own)"
+
+
+def wait_reenumerate(before_serials, timeout=25):
+    """Wait until the pre-flash serial set changes (board comes back as CDC
+    after the ROM bootloader ejects). Returns the new by-id name or None."""
+    deadline = time.time() + timeout
+    old = {s["name"] for s in before_serials}
+    while time.time() < deadline:
+        time.sleep(1.0)
+        now = {s["name"] for s in list_serial_mcus()}
+        new = now - old
+        if new:
+            return sorted(new)
+    return None
+
+
+# ---------------------------------------------------------------- katapult
+
+def find_katapult_tool(cfg):
+    """Path to katapult's flashtool.py (cfg key katapult_flashtool), or None."""
+    tool = os.path.expanduser(cfg.get("katapult_flashtool")
+                              or "~/katapult/scripts/flashtool.py")
+    return tool if os.path.isfile(tool) else None
+
+
+def _pyserial_ok(python="python3"):
+    """katapult flashtool.py imports 'serial' (pyserial) for USB serial boards."""
+    try:
+        r = subprocess.run([python, "-c", "import serial"], capture_output=True)
+    except OSError:
+        return False
+    return r.returncode == 0
+
+
+def flash_katapult(uf2_path, device, tool, timeout=120, run=None):
+    """Flash a board sitting in the katapult bootloader (USB CDC serial).
+    katapult flashtool.py CLI (Arksine/katapult): flashtool.py -d <dev> -f <fw>.
+    The board re-enumerates as klipper CDC once the write completes."""
+    run = run or _run
+    if not tool or not os.path.isfile(tool):
+        return False, ("katapult flashtool.py not found — clone katapult "
+                       "(git clone https://github.com/Arksine/katapult "
+                       "~/katapult) or set katapult_flashtool in the ini")
+    ok, why = validate_uf2(uf2_path)
+    if not ok:
+        return False, f"UF2 check failed: {why}"
+    if not _pyserial_ok():
+        return False, ("pyserial missing for python3 — "
+                       "sudo apt install python3-serial (flashtool needs it)")
+    r = run(["python3", tool, "-d", device, "-f", uf2_path], timeout=timeout)
+    tail = ((r.stdout or "") + (r.stderr or "")).strip()[-400:]
+    if getattr(r, "returncode", 1) != 0:
+        return False, f"flashtool failed (rc={r.returncode}): {tail}"
+    return True, f"flashtool OK on {device}: {tail or 'Programming Complete'}"
+
+
+def resolve_target(target, cfg, sysfs="/sys", by_id_dir="/dev/serial/by-id"):
+    """Map a user-supplied board name or by-id fragment to either a BOOTSEL
+    block device or a running CDC board entry."""
+    bootsel = find_bootsel_volumes(sysfs=sysfs)
+    serials = label_serials(list_serial_mcus(by_id_dir=by_id_dir),
+                            parse_mcus_ini(cfg.get("mcus_ini")))
+    for b in bootsel:
+        if target in (b["usb_dev"], b["block_dev"]) or target == "bootsel":
+            return ("bootsel", b)
+    for s in serials:
+        if s["kind"] == "katapult" and (
+                target == "katapult"
+                or target in s["name"]
+                or (s["chipid"] and s["chipid"].lower() == target.lower())
+                or (s.get("board") or "").lower() == target.lower()):
+            return ("katapult", s)
+    for s in serials:
+        if s["chipid"] and (s["chipid"].lower() == target.lower()
+                            or s.get("board", "").lower() == target.lower()
+                            or target in s["name"]):
+            return ("serial", s)
+    return (None, None)
+
+
+# ------------------------------------------------------------------ version
+
+def klippy_mcu_versions(log_path):
+    """{'rp2040main': 'v0.12.0-317-gb89d5523', ...} parsed from klippy.log
+    ('mcu <name> version: ...'). Best-effort; empty when klippy never ran."""
+    versions = {}
+    if not log_path or not os.path.isfile(log_path):
+        return versions
+    pats = [
+        # Kalico: "Loaded MCU 'mcu' 118 commands (Klipper v0.12.0-317-gb89d5523 / gcc: ...)"
+        re.compile(r"Loaded MCU '([^']+)' .*\((?:Klipper|Kalico) (v[0-9][^)\s]*|unknown)"),
+        # "MCU 'mcu' currently has firmware compiled for Klipper (version v0.12.0-...)."
+        re.compile(r"MCU '([^']+)' currently has firmware compiled for \S+ \(version (v[0-9][^)\s]*|unknown)"),
+        # upstream style: "mcu 'mcu' version: v0.12.0-..."
+        re.compile(r"mcu '([^']+)' (?:version|is version)[:]?\s*(v[0-9][^)\s]*|unknown)"),
+    ]
+    try:
+        with open(log_path, errors="replace") as f:
+            for line in f:
+                for p in pats:
+                    m = p.search(line)
+                    if m:
+                        versions[m.group(1)] = m.group(2)
+                        break
+    except OSError:
+        pass
+    return versions
+
+
+# ----------------------------------------------------------------- config
+
+DEFAULT_INI = """
+[service]
+listen = 127.0.0.1
+port = 7130
+firmware_dir = ~/printer_data/config/firmware
+mcus_ini = ~/printer_data/config/meter-kit/mcus.ini
+klippy_log = ~/printer_data/logs/klippy.log
+# katapult bootloader flashtool (used when a board enumerates as usb-katapult_*)
+katapult_flashtool = ~/katapult/scripts/flashtool.py
+"""
+
+
+def load_cfg(path):
+    cp = configparser.ConfigParser()
+    if path and os.path.isfile(path):
+        cp.read(path)
+    else:
+        cp.read_string(DEFAULT_INI)
+    svc = cp["service"] if cp.has_section("service") else {}
+    expand = lambda k, d: os.path.expanduser(svc.get(k, d)) if svc else d
+    return {
+        "listen": svc.get("listen", "127.0.0.1") if svc else "127.0.0.1",
+        "port": int(svc.get("port", 7130)) if svc else 7130,
+        "firmware_dir": expand("firmware_dir", "~/printer_data/config/firmware"),
+        "mcus_ini": expand("mcus_ini", "~/printer_data/config/meter-kit/mcus.ini"),
+        "klippy_log": expand("klippy_log", "~/printer_data/logs/klippy.log"),
+        "katapult_flashtool": expand("katapult_flashtool",
+                                     "~/katapult/scripts/flashtool.py"),
+    }
+
+
+# ------------------------------------------------------------------- web ui
+
+PAGE = """<!doctype html><html><head><meta charset=utf-8><title>A3DP MCU flasher</title>
+<style>
+body{font-family:system-ui,sans-serif;background:#111;color:#eee;margin:2rem;max-width:60rem}
+table{border-collapse:collapse;width:100%;margin:1rem 0}
+td,th{border:1px solid #444;padding:.5rem;text-align:left}
+button{background:#b00;color:#fff;border:0;padding:.4rem .8rem;cursor:pointer;border-radius:4px}
+select,input{background:#222;color:#eee;border:1px solid #555;padding:.3rem}
+#log{white-space:pre-wrap;background:#000;border:1px solid #333;padding:1rem;min-height:3rem}
+.warn{background:#5a4a00;padding:.6rem;border-radius:4px}
+</style></head><body>
+<h1>A3DP MCU flasher <small style=font-weight:400>(Klipper-independent recovery)</small></h1>
+<div class=warn id=warn style=display:none>
+Klipper is RUNNING — for routine firmware updates prefer the FLASH_MCU button in
+Mainsail (klippy happy path). This page is the recovery path for a dead/blank stack.
+</div>
+<p>Boards below are live-probed on each refresh. A board in <b>BOOTSEL</b> mode
+(hold BOOTSEL while plugging USB) or in the <b>katapult bootloader</b>
+(enumerates as usb-katapult_* serial) appears with a flash button — those paths
+need no Klipper at all. Boards running Klipper are listed for identification
+only.</p>
+<table id=t><tr><th>Board</th><th>Device</th><th>State</th><th>Firmware ver (klippy)</th><th>Action</th></tr></table>
+<h3>Flash a BOOTSEL board</h3>
+<p>Board in BOOTSEL: <select id=b></select> Firmware: <select id=f></select>
+<button onclick=doFlash()>FLASH (write UF2)</button></p>
+<div id=log>ready.</div>
+<script>
+async function refresh(){
+  const d = await (await fetch('/api/boards')).json();
+  const t = document.getElementById('t'); t.innerHTML = t.rows[0].outerHTML;
+  const b = document.getElementById('b'); b.innerHTML = '';
+  document.getElementById('warn').style.display = d.klipper_running ? 'block':'none';
+  for (const s of d.serial){ const r=t.insertRow();
+    const kat = s.kind === 'katapult';
+    if (kat) r.bgColor='#1a3a1a';
+    r.insertCell().textContent = s.board || '(unknown)';
+    r.insertCell().textContent = s.name;
+    r.insertCell().textContent = kat ? 'katapult bootloader (flashable)'
+                                     : 'running Klipper CDC ' + s['vid:pid'];
+    r.insertCell().textContent = (d.versions||{})[s.board] || '-';
+    r.insertCell().textContent = kat ? 'select below' : 'use FLASH_MCU in Mainsail'; }
+  for (const x of d.bootsel){ const r=t.insertRow(); r.bgColor='#3a1a1a';
+    r.insertCell().textContent = 'BOOTSEL board';
+    r.insertCell().textContent = x.block_dev;
+    r.insertCell().textContent = 'RP2 bootloader (mass storage)';
+    r.insertCell().textContent = '-';
+    r.insertCell().textContent = 'select below'; }
+  for (const x of d.bootsel){ const o=document.createElement('option');
+    o.value='bootsel:'+x.block_dev; o.textContent=x.block_dev+' ('+x.usb_dev+')'; b.appendChild(o); }
+  for (const s of d.serial){ if (s.kind==='katapult'){ const o=document.createElement('option');
+    o.value='kat:'+s.name; o.textContent=s.name+' (katapult bootloader)'; b.appendChild(o); } }
+  const f = document.getElementById('f'); f.innerHTML='';
+  for (const x of d.firmware){ const o=document.createElement('option');
+    o.value=x.path; o.textContent=x.file; f.appendChild(o); }
+  const kats = d.serial.filter(s=>s.kind==='katapult').length;
+  let note = d.firmware.length ? d.firmware.length + ' firmware file(s) in ' + d.firmware_dir
+                               : 'no .uf2 files in ' + d.firmware_dir;
+  if (kats && !d.katapult_tool) note += ' — WARNING: katapult flashtool not found (clone katapult / set katapult_flashtool)';
+  document.getElementById('log').textContent = note;
+}
+async function doFlash(){
+  const v = document.getElementById('b').value;
+  if (!v) { log('No flashable board detected.'); return; }
+  if (!confirm('Write the selected UF2 to the selected board?')) return;
+  const isKat = v.startsWith('kat:');
+  const body = isKat ? {kind:'katapult', target: v.slice(4), file: document.getElementById('f').value}
+                     : {kind:'bootsel', block_dev: v.slice(8), file: document.getElementById('f').value};
+  const r = await fetch('/api/flash', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body)});
+  const j = await r.json(); log((j.ok?'OK: ':'FAIL: ') + j.msg); refresh();
+}
+function log(m){ document.getElementById('log').textContent = m; }
+refresh(); setInterval(refresh, 15000);
+</script></body></html>"""
+
+
+def enumerate_payload(cfg):
+    serials = label_serials(list_serial_mcus(), parse_mcus_ini(cfg["mcus_ini"]))
+    return {
+        "bootsel": find_bootsel_volumes(),
+        "serial": serials,
+        "firmware": scan_firmware_dir(cfg["firmware_dir"]),
+        "firmware_dir": cfg["firmware_dir"],
+        "versions": klippy_mcu_versions(cfg["klippy_log"]),
+        "klipper_running": _klipper_service_active(),
+        "katapult_tool": find_katapult_tool(cfg),
+    }
+
+
+def _klipper_service_active():
+    try:
+        r = subprocess.run(["systemctl", "is-active", "--quiet", "klipper"])
+        return r.returncode == 0
+    except OSError:
+        return False
+
+
+class Handler(BaseHTTPRequestHandler):
+    cfg = None
+
+    def _json(self, obj, code=200):
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path in ("/", "/index.html"):
+            body = PAGE.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif self.path == "/api/boards":
+            self._json(enumerate_payload(self.cfg))
+        else:
+            self._json({"error": "not found"}, 404)
+
+    def do_POST(self):
+        if self.path != "/api/flash":
+            return self._json({"error": "not found"}, 404)
+        n = int(self.headers.get("Content-Length", 0))
+        try:
+            req = json.loads(self.rfile.read(n))
+        except json.JSONDecodeError:
+            return self._json({"ok": False, "msg": "bad json"}, 400)
+        uf2 = req.get("file")
+        if not os.path.isfile(uf2):
+            # allow a bare filename resolved inside firmware_dir
+            alt = os.path.join(self.cfg["firmware_dir"], os.path.basename(str(uf2)))
+            if os.path.isfile(alt):
+                uf2 = alt
+            else:
+                return self._json({"ok": False, "msg": f"firmware file not found: {uf2}"})
+        before = list_serial_mcus()
+        if req.get("kind") == "katapult":
+            target = req.get("target") or ""
+            kat = {s["name"] for s in list_serial_mcus() if s["kind"] == "katapult"}
+            if target not in kat:
+                return self._json({"ok": False,
+                                   "msg": f"{target} is not a katapult-bootloader board right now"})
+            ok, msg = flash_katapult(uf2, os.path.join("/dev/serial/by-id", target),
+                                     find_katapult_tool(self.cfg))
+        else:
+            block_dev = req.get("block_dev")
+            bootsel = {b["block_dev"] for b in find_bootsel_volumes()}
+            if block_dev not in bootsel:
+                return self._json({"ok": False,
+                                   "msg": f"{block_dev} is not a BOOTSEL-mode board right now"})
+            ok, msg = flash_boot(uf2, block_dev)
+        if ok:
+            new = wait_reenumerate(before)
+            msg += f"; re-enumeration: {new or 'not seen yet (check dmesg)'}"
+        self._json({"ok": ok, "msg": msg})
+
+    def log_message(self, fmt, *args):
+        sys.stderr.write("[mcu-flashd] " + fmt % args + "\n")
+
+
+def serve(cfg):
+    Handler.cfg = cfg
+    httpd = ThreadingHTTPServer((cfg["listen"], cfg["port"]), Handler)
+    print(f"a3dp-mcu-flashd serving http://{cfg['listen']}:{cfg['port']} "
+          f"(firmware_dir={cfg['firmware_dir']})", flush=True)
+    httpd.serve_forever()
+
+
+# --------------------------------------------------------------------- cli
+
+def cmd_enumerate(cfg, as_json):
+    payload = enumerate_payload(cfg)
+    if as_json:
+        print(json.dumps(payload, indent=2))
+        return 0
+    for s in payload["serial"]:
+        print(f"{s.get('kind', 'other'):7s}  {s['name']}  tty={s['tty']}"
+              f"  vid:pid={s['vid:pid']}"
+              + (f"  board={s['board']}" if s["board"] else ""))
+    for b in payload["bootsel"]:
+        print(f"BOOTSEL {b['usb_dev']}  {b['block_dev']}  ({b['label']}) — flashable")
+    kats = [s for s in payload["serial"] if s.get("kind") == "katapult"]
+    if kats:
+        print("katapult flashtool: "
+              + (payload.get("katapult_tool")
+                 or "NOT FOUND (clone katapult / set katapult_flashtool)"))
+    if not payload["serial"] and not payload["bootsel"]:
+        print("no MCU boards found")
+    print(f"firmware dir: {payload['firmware_dir']} "
+          f"({len(payload['firmware'])} .uf2 file(s))")
+    return 0
+
+
+def cmd_flash(cfg, target, uf2):
+    kind, obj = resolve_target(target, cfg)
+    if kind is None:
+        print(f"target '{target}' not found — run enumerate. A board must be in "
+              "BOOTSEL mode (hold BOOTSEL while plugging USB) for the "
+              "Klipper-independent path.", file=sys.stderr)
+        return 2
+    if kind == "serial":
+        print(f"'{target}' is a running Klipper board ({obj['name']}) — the "
+              "Klipper-independent path only flashes BOOTSEL or katapult-"
+              "bootloader boards. Use the FLASH_MCU macro / moonraker-mcu-"
+              "flasher while klipper works, or hold BOOTSEL (or enter katapult) "
+              "and re-run.", file=sys.stderr)
+        return 3
+    before = list_serial_mcus()
+    if kind == "katapult":
+        ok, msg = flash_katapult(uf2, os.path.join("/dev/serial/by-id", obj["name"]),
+                                 find_katapult_tool(cfg))
+        print(msg)
+        if not ok:
+            return 1
+        new = wait_reenumerate(before)
+        print(f"re-enumeration: {new or 'not seen within 25s — check dmesg / replug'}")
+        return 0
+    ok, msg = flash_boot(uf2, obj["block_dev"])
+    print(msg)
+    if not ok:
+        return 1
+    new = wait_reenumerate(before)
+    print(f"re-enumeration: {new or 'not seen within 25s — check dmesg / replug'}")
+    return 0
+
+
+def main():
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--cfg", default="/etc/a3dp-mcu-flashd.ini",
+                        help="service ini (default /etc/a3dp-mcu-flashd.ini)")
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0],
+                                 parents=[common])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    # --cfg accepted before AND after the subcommand (systemd unit uses the latter)
+    sub.add_parser("enumerate", parents=[common]).add_argument(
+        "--json", action="store_true")
+    p = sub.add_parser("flash", parents=[common])
+    p.add_argument("target", help="board name (mcus.ini), chipid or block dev")
+    p.add_argument("uf2", help="firmware .uf2 file")
+    sub.add_parser("serve", parents=[common]).add_argument("--port", type=int)
+    args = ap.parse_args()
+    cfg = load_cfg(args.cfg)
+    if args.cmd == "enumerate":
+        sys.exit(cmd_enumerate(cfg, args.json))
+    if args.cmd == "flash":
+        sys.exit(cmd_flash(cfg, args.target, args.uf2))
+    if args.port:
+        cfg["port"] = args.port
+    serve(cfg)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,33 @@
+# systemd template unit: one instance per DHT22 sensor.
+#   systemctl enable --now dht22-publisher@drybox
+# Instance name (%i) = sensor name -> publishes to topic sensors/<name>.
+#
+# Per-instance settings live in /etc/dht-mqtt/<instance>.conf:
+#   GPIO=17                       # BCM GPIO of the DHT22 data line (required)
+#   EXTRA_ARGS=                   # optional extra CLI args, whitespace-split
+#     e.g. EXTRA_ARGS=--source iio --iio-device /sys/bus/iio/devices/iio:device0
+# If GPIO is unset the publisher exits immediately with a config error visible
+# in the journal — check 'journalctl -u dht22-publisher@<instance>'.
+
+[Unit]
+Description=DHT22 MQTT publisher (%i)
+After=network-online.target mosquitto.service
+Wants=network-online.target
+Requires=mosquitto.service
+
+[Service]
+Type=simple
+User=pi
+# /dev/gpiochip* is owned by group gpio; needed by both read sources.
+SupplementaryGroups=gpio
+EnvironmentFile=-/etc/dht-mqtt/%i.conf
+# Expand via sh so an unset EXTRA_ARGS vanishes instead of becoming an empty
+# argument (systemd's ${VAR} would emit an empty token and argparse would die).
+ExecStart=/bin/sh -c 'exec /opt/dht-mqtt/venv/bin/python /opt/dht-mqtt/dht22_publisher.py --name %i --gpio "${GPIO:-}" $EXTRA_ARGS'
+Restart=always
+RestartSec=5
+# DHT reads are quick; a hang means the GPIO library wedged.
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

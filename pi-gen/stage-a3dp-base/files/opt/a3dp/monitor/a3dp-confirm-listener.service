@@ -1,0 +1,14 @@
+[Unit]
+Description=A3DP confirm listener (OP5 NPU alarm -> GLM confirm -> auto-PAUSE)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+ExecStart=/home/pi/monitor-rnd/venv/bin/python /home/pi/monitor/confirm_listener.py --config /home/pi/monitor/confirm-listener.ini
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

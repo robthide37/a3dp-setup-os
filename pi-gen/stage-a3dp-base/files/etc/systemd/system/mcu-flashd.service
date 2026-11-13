@@ -1,0 +1,14 @@
+[Unit]
+Description=A3DP standalone MCU flasher (Klipper-independent recovery path)
+Documentation=https://github.com/robthide37/printer-hardware
+# needs no klipper/moonraker; runs as root for mount/umount of BOOTSEL volumes
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/bin/a3dp-mcu-flash serve --cfg /etc/a3dp-mcu-flashd.ini
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

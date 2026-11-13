@@ -1,0 +1,37 @@
+# a3dp-print-monitor config — deployed to /home/pi/monitor/config.ini
+# Re-pointing to another camera = change snapshot_url (and moonraker_url if
+# the printer host differs). That is the whole change.
+
+[camera]
+# Full-res snapshot. Rift: nginx proxies ustreamer at /webcam/ (verified).
+snapshot_url = http://192.168.50.219/webcam/?action=snapshot
+# Rift webcam config ships frames 180-inverted (flip_horizontal+flip_vertical);
+# that inversion produced GLM false verdicts in R&D. Rotate monitor-side until
+# the flip is fixed on the printer (Rob write op). Set false once fixed.
+preprocess_rotate_180 = true
+
+[printer]
+# Moonraker, single-object queries ONLY (comma-combined returns {} on these hosts)
+moonraker_url = http://192.168.50.219:7125
+# printer_stats states that trigger evaluation
+evaluate_states = printing
+
+[vlm]
+endpoint = http://192.168.50.232:8080/v1/chat/completions
+# brain-glm = alias of glm53-qad2 = same upstream as the loaded a3dp-brain
+# lane -> no llama-swap lane swap, no eviction of the main brain.
+model = brain-glm
+# llama-swap API key, 0600, root-owned. NEVER commit the real key.
+api_key_file = /etc/a3dp-print-monitor/llamaswap.key
+timeout_s = 120
+
+[monitor]
+alert_consecutive = 2      # consecutive bad verdicts before alerting (R&D mitigation)
+unclear_consecutive = 3    # 'unclear' is noisier (1-in-3 false flags in R&D) -> higher bar
+vlm_fail_threshold = 10    # consecutive VLM failures before degraded mode
+degraded_alert_min = 10    # degraded mode persists this long -> alert
+realert_minutes = 30       # re-alert interval while an incident stays open
+frame_dir = /home/pi/print-monitor/frames
+state_file = /home/pi/print-monitor/state.json
+alerts_file = /home/pi/print-monitor/alerts/unread.jsonl
+frame_retention_days = 7

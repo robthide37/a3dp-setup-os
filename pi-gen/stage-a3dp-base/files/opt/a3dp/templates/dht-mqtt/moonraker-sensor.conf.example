@@ -1,0 +1,46 @@
+# Moonraker config additions for DHT22 drybox monitoring via MQTT.
+# APPEND these sections to ~/printer_data/config/moonraker.conf (do not
+# duplicate an existing [mqtt] or [sensor ...] section — Moonraker's parser
+# rejects duplicate sections).
+# Reference: https://moonraker.readthedocs.io/en/latest/configuration/
+#            (section "MQTT Sensor Configuration")
+# The publisher (dht22-publisher@drybox) writes retained JSON
+# {"temp": <degC>, "hum": <pct>} to sensors/<name>.
+
+[mqtt]
+address: localhost
+port: 1883
+# The sensor data flows publisher -> broker -> Moonraker only; do not expose
+# the Moonraker JSON-RPC API over MQTT.
+enable_moonraker_api: False
+
+[sensor drybox]
+type: mqtt
+name: Drybox
+state_topic: sensors/drybox
+state_response_template:
+  {% set d = payload|fromjson %}
+  {set_result("temperature", d["temp"]|float)}
+  {set_result("humidity", d["hum"]|float)}
+parameter_temperature:
+  units=°C
+parameter_humidity:
+  units=%
+
+# Chamber example — enable ONLY after physically wiring the chamber DHT22
+# (GPIO4 / physical pin 7 on the meter kit) and installing
+# dht22-publisher@chamber (GPIO=4). Do not enable speculatively: a sensor
+# with no publisher just sits at its last retained value forever.
+#
+# [sensor chamber]
+# type: mqtt
+# name: Chamber
+# state_topic: sensors/chamber
+# state_response_template:
+#   {% set d = payload|fromjson %}
+#   {set_result("temperature", d["temp"]|float)}
+#   {set_result("humidity", d["hum"]|float)}
+# parameter_temperature:
+#   units=°C
+# parameter_humidity:
+#   units=%

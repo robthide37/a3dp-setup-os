@@ -1,0 +1,32 @@
+[Unit]
+Description=A3DP bed-occupancy gate daemon (a3dp-bedgate)
+Documentation=file:///home/pi/a3dp-bedgate/GATE-CONTRACT.md
+# The daemon talks to Moonraker over 127.0.0.1:7125; it must survive
+# moonraker/klippy restarts on its own (reconnect loops), so these are soft
+# ordering hints, not hard requirements.
+After=network-online.target moonraker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/a3dp-bedgate
+# Startup writes the fail-open reset BEFORE the API port opens (contract §2).
+ExecStart=/usr/bin/python3 /home/pi/a3dp-bedgate/a3dp-bedgate.py
+# Graceful stop: ExecStop runs BEFORE the main process is killed and writes
+# bed_clear=True + ticks=0 + console warning (contract §2). NOTE: a `kill -9`
+# skips ExecStop BY DESIGN — that is the fail-open staleness path (§6 bullet 1).
+ExecStop=/usr/bin/python3 /home/pi/a3dp-bedgate/a3dp-bedgate.py --exec-stop-reset
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=25
+# Hardening: daemon needs no special capabilities
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/pi/printer_data/logs
+# Loopback port 8084; nginx :8083 is the LAN-facing surface (allowlist there).
+
+[Install]
+WantedBy=multi-user.target

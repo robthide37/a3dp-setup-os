@@ -1,0 +1,57 @@
+name: build-image
+
+# Build the A3DP fleet image. Runs natively on an arm64 runner (free for
+# public repos). Tag push (v*) -> GitHub release with .img.xz + SHA256SUMS;
+# workflow_dispatch -> artifact only (test builds).
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space (image build needs ~10G)
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL || true
+          docker image prune -af || true
+          df -h /
+
+      - name: Build image (pi-gen, docker)
+        run: ./build.sh
+
+      - name: Collect artifacts + checksums
+        run: |
+          mkdir -p out
+          cp pigen-upstream/deploy/*.img.xz out/
+          cp pigen-upstream/deploy/*.info out/ 2>/dev/null || true
+          (cd out && sha256sum *.img.xz > SHA256SUMS.txt)
+          cat out/SHA256SUMS.txt
+          df -h /
+
+      - name: Upload build artifact (every run)
+        uses: actions/upload-artifact@v4
+        with:
+          name: a3dp-image-${{ github.ref_name }}
+          path: |
+            out/*.img.xz
+            out/SHA256SUMS.txt
+          if-no-files-found: error
+
+      - name: Publish release (tag pushes only)
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "a3dp-image $GITHUB_REF_NAME" \
+            --notes "Automated fleet image build. Flash with Raspberry Pi Imager; per-machine activation via hostname (see README)." \
+            out/*.img.xz out/SHA256SUMS.txt

@@ -1,0 +1,74 @@
+body {
+  position: center;
+  background-size: auto;
+  background-image: url("./main-background1.png");
+  background-repeat: repeat-x;
+  background-position: 0 0;
+
+  animation: animatedBackground 30s linear infinite alternate;
+}
+@keyframes animatedBackground {
+ from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 100% 0;
+  }
+}
+
+.v-application {
+  background-color: rgba(0, 0, 0, 0)!important;
+  border: none!important;
+  box-shadow: none!important;
+}
+.consoleScrollContainer,
+.consoleTable {
+  font-family: fantasy;
+  font-size: 15px;
+}
+#nav-header .v-toolbar_titles{
+  font-size: 35px;
+}
+
+.v-toolbar__title {
+  text-transform: uppercase;
+  font-family: 'Impact', fantasy;
+  color: #02e9f5;
+  font-size: x-large;
+  -webkit-text-stroke: .1px black;
+}
+
+.theme--dark.v-topbar {
+  color: #b0afac;
+}
+
+.theme--dark.v-navigation-drawer,
+  .v-list-item-group .v-list-item--active {
+    color: rgba(120, 207, 232, 0.95);
+    background-color: #000;
+}
+
+.v-list-item__title.menu-item-title{
+    font-family: 'Impact', fantasy;
+    font-size: large;
+    -webkit-text-stroke: .1px black; 
+}
+.theme--dark.v-card {
+  background-color: rgba(0, 0, 0, 0.8!important;
+    
+}
+.theme--dark.v-icon {
+    color: #FFFFFF;
+}
+
+.theme--dark.v-sheet {
+    background-color: rgba(0, 0, 0, 0.44)!important;
+    backdrop-filter: blur(10px);
+    border: none!important;
+    box-shadow: none!important;
+}
+.theme--dark.v-app-bar.v-toolbar.v-sheet {
+    background-color: rgba(0, 0, 0, 0.32)!important;
+    backdrop-filter: blur(10px);
+}
+

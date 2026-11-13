@@ -1,0 +1,11 @@
+[Unit]
+Description=Fire a3dp-print-monitor every 60 s
+
+[Timer]
+OnBootSec=90
+OnUnitActiveSec=60
+AccuracySec=5
+Unit=a3dp-print-monitor.service
+
+[Install]
+WantedBy=timers.target

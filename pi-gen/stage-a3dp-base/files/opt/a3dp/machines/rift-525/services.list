@@ -1,0 +1,4 @@
+# Machine profile: rift-525 (hostnames rift*, a3dp525*).
+# Services enabled at first boot — one per line, each must exist as
+# /opt/a3dp/services/<name>/ with a <name>.service unit.
+a3dp-bedgate

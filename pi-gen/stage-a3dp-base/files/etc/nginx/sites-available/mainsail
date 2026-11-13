@@ -1,0 +1,20 @@
+# A3DP fleet nginx site — Mainsail front-end + camera proxy.
+# Same shape as the live-validated installer config (a3dpmeter 2026-10-31).
+server {
+    listen 80 default_server;
+    server_name _;
+    root /var/www/html;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    location /webcam/ {
+        proxy_pass http://127.0.0.1:8080/;
+    }
+
+    location /webcam2/ {
+        proxy_pass http://127.0.0.1:8081/;
+    }
+}

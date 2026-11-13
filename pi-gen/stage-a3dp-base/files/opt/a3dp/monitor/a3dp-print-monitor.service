@@ -1,0 +1,13 @@
+[Unit]
+Description=A3DP print monitor (camera snapshot -> GLM verdict, read-only against printer)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pi
+RuntimeDirectory=a3dp-print-monitor
+# lock is taken by the script itself (non-blocking; a held lock = skip quietly)
+ExecStart=/home/pi/monitor/venv/bin/python /home/pi/monitor/a3dp_print_monitor.py --config /home/pi/monitor/config.ini
+TimeoutStartSec=300
+Nice=10

@@ -1,0 +1,152 @@
+#!/bin/bash
+# /usr/local/sbin/a3dp-firstboot — A3DP machine activation (first boot only).
+#
+# Selects the machine profile (boot-partition marker > hostname prefix map),
+# deploys its config into ~/printer_data/config, fills MCU by-id tokens from
+# live enumeration, enables the profile's services, restarts the stack.
+#
+# Fail-open rules:
+#  - never crash-loop: any error falls back to the base placeholder config and
+#    still marks first boot done (log keeps the reason)
+#  - never guesses MCU paths: tokens only resolve from /dev/serial/by-id;
+#    unresolved tokens stay in place and klippy stays down loudly (safe)
+set -u
+
+LOG=/var/log/a3dp-firstboot.log
+DONE=/var/lib/a3dp/firstboot.done
+PI=/home/pi
+CFG=$PI/printer_data/config
+MACHINES=/opt/a3dp/machines
+SHARED=/opt/a3dp/shared
+
+exec >>"$LOG" 2>&1
+echo "== a3dp-firstboot $(date -Is) on $(hostname) =="
+
+mkdir -p /var/lib/a3dp
+
+# ---------------------------------------------------------------- profile ----
+PROFILE=""
+CONF=/boot/firmware/a3dp-machine.conf
+if [ -f "$CONF" ]; then
+  PROFILE=$(sed -n 's/^A3DP_MACHINE=//p' "$CONF" | head -1 | tr -d '[:space:]')
+  [ -n "$PROFILE" ] && echo "profile from boot marker: $PROFILE"
+fi
+if [ -z "$PROFILE" ]; then
+  H=$(hostname)
+  case "$H" in
+    rift*|a3dp525*)  PROFILE=rift-525 ;;
+    meter*|a3dpmeter*) PROFILE=meter-idex ;;
+    *)               PROFILE=base ;;
+  esac
+  echo "profile from hostname '$H': $PROFILE"
+fi
+PROFILE_DIR="$MACHINES/$PROFILE"
+if [ ! -d "$PROFILE_DIR" ]; then
+  echo "WARN: profile dir $PROFILE_DIR missing — falling back to base"
+  PROFILE=base; PROFILE_DIR="$MACHINES/base"
+fi
+
+# ------------------------------------------------------------ shared tree ----
+if [ -d "$SHARED/A3dp" ]; then
+  cp -a "$SHARED/A3dp/." "$CFG/A3dp/" 2>/dev/null || true
+fi
+if [ -d "$SHARED/theme" ]; then
+  rm -rf "$CFG/.theme"
+  cp -a "$SHARED/theme" "$CFG/.theme"
+fi
+
+# ------------------------------------------------------- machine config ----
+deploy_failed=0
+if [ "$PROFILE" != "base" ]; then
+  if [ -s "$CFG/printer.cfg" ]; then
+    cp -a "$CFG/printer.cfg" "$CFG/printer.cfg.pre-firstboot"
+  fi
+  # merge profile config over the shared tree (profile wins)
+  if cp -a "$PROFILE_DIR/config/." "$CFG/" 2>>"$LOG"; then
+    echo "profile config merged: $PROFILE_DIR/config"
+  else
+    echo "ERROR: profile config merge failed"; deploy_failed=1
+  fi
+fi
+
+# ------------------------------------------------- MCU by-id token fill ----
+if [ "$PROFILE" = "meter-idex" ]; then
+  python3 - <<'PYEOF'
+import glob, os, re, sys
+cfg = "/home/pi/printer_data/config/printer.cfg"
+byid = sorted(glob.glob("/dev/serial/by-id/*"))
+mains = [p for p in byid if os.path.basename(p).startswith("usb-Klipper_stm32h723xx")]
+rps   = sorted(os.path.basename(p) for p in byid
+               if os.path.basename(p).startswith("usb-Klipper_rp2040"))
+vals = {"@A3DP_MCU_MAIN@": os.path.basename(mains[0]) if mains else None,
+        "@A3DP_MCU_HEAD0@": rps[0] if len(rps) > 0 else None,
+        "@A3DP_MCU_HEAD1@": rps[1] if len(rps) > 1 else None}
+src = open(cfg).read()
+for tok, val in vals.items():
+    if val is None:
+        print(f"WARN: token {tok} unresolved — no matching board enumerated; "
+              "klippy will stay down until the board is connected (safe state)")
+        continue
+    src = src.replace(tok, "/dev/serial/by-id/" + val)
+open(cfg, "w").write(src)
+print("token fill done:", {k: bool(v) for k, v in vals.items()})
+PYEOF
+  echo "NOTE: verify PRIM/SEC NiteHawk assignment at the bench (runbook Step 3);"
+  echo "      head0/head1 = lexicographic by-id order, not a wiring guarantee."
+fi
+
+# ------------------------------------------------------------ services ----
+if [ -f "$PROFILE_DIR/services.list" ]; then
+  while read -r svc; do
+    case "$svc" in ''|\#*) continue ;; esac
+    SRV_DIR="/opt/a3dp/services/$svc"
+    if [ ! -d "$SRV_DIR" ]; then
+      echo "WARN: service '$svc' in services.list has no /opt/a3dp/services/$svc"; continue
+    fi
+    # daemon payload -> /home/pi/<svc> (unit paths expect this)
+    mkdir -p "$PI/$svc"
+    for f in "$SRV_DIR"/payload/*; do
+      [ -e "$f" ] && cp -a "$f" "$PI/$svc/"
+    done
+    chown -R pi:pi "$PI/$svc"
+    for u in "$SRV_DIR"/*.service; do
+      [ -e "$u" ] || continue
+      install -m 0644 "$u" /etc/systemd/system/
+      systemctl daemon-reload || true
+      systemctl enable "$svc.service" && systemctl start "$svc.service" || \
+        echo "WARN: enabling $svc failed"
+    done
+    for n in "$SRV_DIR"/nginx/*.conf; do
+      [ -e "$n" ] || continue
+      install -m 0644 "$n" "/etc/nginx/sites-available/$(basename "$n")"
+      ln -sf "/etc/nginx/sites-available/$(basename "$n")" \
+             "/etc/nginx/sites-enabled/$(basename "$n")"
+    done
+    echo "service installed+enabled: $svc"
+  done < "$PROFILE_DIR/services.list"
+fi
+
+# --------------------------------------- final config state + restarts ----
+if [ "$deploy_failed" = "1" ] || [ ! -s "$CFG/printer.cfg" ]; then
+  cat > "$CFG/printer.cfg" <<'EOF'
+# A3DP placeholder config — first-boot profile deploy FAILED (see
+# /var/log/a3dp-firstboot.log). Safe state: no motion, no heaters.
+[mcu]
+serial: /dev/null
+
+[printer]
+kinematics: none
+max_velocity: 1
+max_accel: 1
+EOF
+  echo "fallback placeholder config written"
+fi
+
+systemctl restart nginx || true
+systemctl restart moonraker || true
+systemctl restart klipper || true
+
+echo "profile=$PROFILE done at $(date -Is)"
+mkdir -p /var/lib/a3dp
+touch "$DONE"
+exit 0

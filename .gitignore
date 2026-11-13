@@ -1,0 +1,7 @@
+pigen-upstream/
+deploy/
+out/
+*.img
+*.img.xz
+*.info
+__pycache__/

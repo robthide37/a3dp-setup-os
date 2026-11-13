@@ -1,0 +1,24 @@
+# A3DP MCU flasher web UI — Klipper-independent recovery path.
+# Deployed to /etc/nginx/sites-available/a3dp-mcu-flash + symlink in sites-enabled.
+# Port 8082 (NOT 8081): 8081 is occupied by a stray 'a3dp-flashd' service found
+# live on a3dpmeter 2026-10-31 (unknown provenance, see t_b9e8180f) — do not
+# reuse 8081 until that collision is resolved. :80 is Mainsail's default_server
+# and update-managed (injecting a location block there is fragile).
+# LAN-only; no auth (recovery tool, LAN-trusted like moonraker trusted_clients).
+server {
+    listen 8082 default_server;
+    listen [::]:8082 default_server;
+    server_name _;
+
+    allow 127.0.0.1;
+    allow ::1;
+    allow 192.168.50.0/24;
+    deny all;
+
+    location / {
+        proxy_pass http://127.0.0.1:7130;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_read_timeout 120s;
+    }
+}

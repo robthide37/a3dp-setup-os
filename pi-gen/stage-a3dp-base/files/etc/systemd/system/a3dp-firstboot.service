@@ -1,0 +1,17 @@
+[Unit]
+Description=A3DP first-boot machine activation (profile select + config deploy)
+Documentation=file:///opt/a3dp/machines
+# Soft ordering: firstboot restarts the stack itself, so these are hints.
+After=local-fs.target network-online.target klipper.service moonraker.service nginx.service mcu-flashd.service
+Wants=network-online.target
+ConditionPathExists=!/var/lib/a3dp/firstboot.done
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/a3dp-firstboot
+RemainAfterExit=yes
+TimeoutStartSec=600
+StandardOutput=journal+console
+
+[Install]
+WantedBy=multi-user.target

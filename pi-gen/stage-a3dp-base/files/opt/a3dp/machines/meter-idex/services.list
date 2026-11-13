@@ -1,0 +1,5 @@
+# Machine profile: meter-idex (hostnames meter*, a3dpmeter*).
+# Services enabled at first boot — one per line.
+# Bedgate/monitor are intentionally NOT enabled on meter units: the detection
+# substrate for the meter lane runs off-box (a3dpmeter print monitor lane,
+# DETECTION-SPEC.md). Enable locally if a future spec says otherwise.

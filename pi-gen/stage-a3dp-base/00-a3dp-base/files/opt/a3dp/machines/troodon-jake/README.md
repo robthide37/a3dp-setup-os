@@ -62,8 +62,10 @@ only the serial-retry loop, zero config errors):
 3. **`enabled_extruders` commented in `hardware/shaper.cfg`** — removed
    upstream, rejected by Kalico; was already inert on Danger v0.12.
 
-`moonraker.conf` = fleet canonical conf (v0.1.3 line) + three machine
+`moonraker.conf` = fleet canonical conf (v0.1.3 line) + four machine
 additions, documented in the file header: `[octoprint_compat]`,
+`[file_manager]` (`enable_object_processing: True`, verbatim from the live
+conf — Mainsail exclude-object/cancel-object depends on it),
 `[paneldue]`, `[update_manager moonraker-obico]`.
 
 ## Decisions settled (t_1a6643fd)

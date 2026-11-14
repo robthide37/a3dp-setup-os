@@ -36,6 +36,7 @@ if [ -z "$PROFILE" ]; then
   case "$H" in
     rift*|a3dp525*)  PROFILE=rift-525 ;;
     meter*|a3dpmeter*) PROFILE=meter-idex ;;
+    troodon*|a3dptr300*) PROFILE=troodon-jake ;;
     kit*|beta*)      PROFILE=beta-collector ;;
     *)               PROFILE=base ;;
   esac

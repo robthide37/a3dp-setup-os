@@ -32,6 +32,7 @@ Machine profiles shipped in the image (first boot selects ONE):
 | `rift-525` | `rift*`, `a3dp525*` | live-verified a3dp525 config (stm32f446 main + stm32g0b1 head0, by-id product-string paths), bed-gate macros + daemon (enabled), Cartographer/eddy probe config, timelapse |
 | `meter-idex` | `meter*`, `a3dpmeter*` | meter kit config (Octopus Pro H723 + 2× LDO NiteHawk-36), Dual.cfg IDEX, euclid.cfg, mcu-flasher sections; MCU by-id paths tokenized — filled from live enumeration at first boot |
 | `beta-collector` | `kit*`, `beta*` | data-collection kit (Phase-0 beta program): NOT a printer — klipper/moonraker/klipper-mcu/mcu-flashd/bedgate/nginx are **disabled** via the profile disable list; crowsnest ustreamer :8080 (1080p MJPEG) + `beta-kit-collector` (60 s snapshots → ONNX verdicts → `~/kit-data/`) run instead. Detector venv + model are baked (`/opt/a3dp/detector-venv`, `/opt/a3dp/models`). Join our tailnet with `sudo a3dp-join` (prints the auth URL). Config: `/home/pi/beta-kit-collector/config.ini` |
+| `troodon-jake` | `troodon*`, `a3dptr300*` | Jake's Troodon 300 (Duet2-class ATSAM4E8E clone main MCU + G0B1 CAN head0 + Duex TMC2660/SX1509 + Leadshine pulse-mode X/Y + Euclid probe). Shake&Tune baked in the image for this profile. KlipperScreen + moonraker-obico install at migration time. See `machines/troodon-jake/README.md` |
 | `base` | anything else | placeholder config; all AI services off |
 
 ## Flash + activate

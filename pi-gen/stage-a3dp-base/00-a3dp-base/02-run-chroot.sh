@@ -146,6 +146,22 @@ cat > /home/pi/klipper/klippy/plugins/cartographer.py <<'EOF'
 from cartographer.extra import *
 EOF
 
+# ---- Shake&Tune (klippy extras module) ----
+# The troodon-jake profile ships an active [shaketune] section; without the
+# module klippy halts with "Section 'shaketune' is not a valid config section"
+# (same first-boot defect class as the rift-525 Cartographer gap, t_fbe94cd5).
+# Pinned v6.0.0 (354ee4b): compat wrappers handle both pre- and post-Dec-2025
+# klipper shaper calibration APIs (the image's kalico pin 84b3e373 predates
+# the breaking change), Trixie-compatible, scipy no longer required. Verified
+# by dry-parse of the troodon-jake profile against kalico 84b3e373 with this
+# exact module (2026-11-14, t_1a6643fd). Module-only install: the klippain
+# v4.x route of overwriting input_shaper.py / shaper_calibrate.py /
+# shaper_defs.py inside extras is deliberately NOT used — those files are
+# Kalico's own and must not be clobbered.
+git clone --depth 1 --branch v6.0.0 https://github.com/Frix-x/klippain-shaketune.git /home/pi/klippain-shaketune
+cp -r /home/pi/klippain-shaketune/shaketune /home/pi/klipper/klippy/extras/
+/home/pi/klippy-env/bin/pip install -r /home/pi/klippain-shaketune/requirements.txt
+
 # ---- klipper host-mcu (Rift [mcu rpi]) ----
 cd /home/pi/klipper/scripts
 make || true

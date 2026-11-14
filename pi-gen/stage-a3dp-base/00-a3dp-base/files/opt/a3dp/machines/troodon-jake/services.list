@@ -1,0 +1,6 @@
+# Machine profile: troodon-jake (hostnames troodon*, a3dptr300*).
+# Services enabled at first boot — one per line, each must exist as
+# /opt/a3dp/services/<name>/ with a <name>.service unit.
+# Base printer stack (klipper/moonraker/nginx/crowsnest) is base-image;
+# nothing extra shipped: KlipperScreen + moonraker-obico install at
+# migration time (see runbook — neither is packaged as an image service).

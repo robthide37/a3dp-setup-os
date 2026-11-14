@@ -1,0 +1,3 @@
+# Machine profile: troodon-jake (hostnames troodon*, a3dptr300*).
+# disable.list: EMPTY by contract — a printer profile disables nothing. The
+# file exists so the firstboot disable-list contract is explicit per profile.

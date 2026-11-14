@@ -10,6 +10,7 @@ picks ONE profile by hostname prefix, or by `A3DP_MACHINE=<profile>` in
 | `rift-525/` | `rift*`, `a3dp525*` | live-verified a3dp525 config; bed-gate daemon enabled via `services.list` |
 | `meter-idex/` | `meter*`, `a3dpmeter*` | meter kit config; MCU serials are `@A3DP_MCU_*@` tokens filled from `/dev/serial/by-id` at first boot (never guessed) |
 | `beta-collector/` | `kit*`, `beta*` | data-collection kit (beta program, docs/beta-data-kit.md in print-monitoring): not a printer — the printer stack is switched off via `disable.list`; camera lane + `beta-kit-collector` only |
+| `troodon-jake/` | `troodon*`, `a3dptr300*` | Jake's Troodon 300: dual-MCU (sam4e8e USB main + G0B1 CAN head0), Duex TMC2660×5/SX1509, Leadshine X/Y pulse-mode steppers, Euclid probe. Config = t_5351bc6a verified tree; deviations + decisions in its README (DangerKlipper→Kalico shaper regeneration is a migration step, not a first-boot one) |
 
 A profile dir carries:
 

@@ -27,6 +27,9 @@ jobs:
           docker image prune -af || true
           df -h /
 
+      - name: Baked-payload JS check (:8082 flasher must emit valid JS)
+        run: python3 tests/test_baked_flasher_payload.py
+
       - name: Build image (pi-gen, docker)
         run: ./build.sh
 

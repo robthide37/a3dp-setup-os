@@ -141,7 +141,18 @@ fi
 # v2026.10.00-177's gcode.py — locally reproduced).
 # scipy: optional extra of the plugin (scan-model interpolation); baked to
 # match the live Rift env so CARTOGRAPHER_SCAN_CALIBRATE works out of the box.
-/home/pi/klippy-env/bin/pip install "cartographer3d-plugin==1.10.1" scipy
+# Plugin pin: git be45bdd (= v1.10.1 + 2 commits — the exact tree the live
+# Rift .219 runs as "1.10.1.post2"). PyPI 1.10.1 predates Kalico's mesh-based
+# axis_twist_compensation (991e1823 #1055 dropped horizontal_move_z) and
+# CRASHES klippy at connect ("'AxisTwistCompensation' object has no attribute
+# 'horizontal_move_z'") whenever [axis_twist_compensation] is enabled — which
+# the rift-525 shipped sensors.cfg has. Reproduced in the v0.1.4 parse sandbox
+# (2 connect crashes) and verified fixed at be45bdd; PyPI has no stable
+# release with the fix (fix first tagged v1.11.0b1).
+git clone https://github.com/Cartographer3D/cartographer3d-plugin.git \
+  /home/pi/cartographer3d-plugin
+git -C /home/pi/cartographer3d-plugin checkout --detach be45bdd
+/home/pi/klippy-env/bin/pip install /home/pi/cartographer3d-plugin scipy
 cat > /home/pi/klipper/klippy/plugins/cartographer.py <<'EOF'
 from cartographer.extra import *
 EOF

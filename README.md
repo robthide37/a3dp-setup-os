@@ -161,9 +161,18 @@ Moonraker are all reached this way (live-proven on Brent's shared-in meter).
 The AI stack ships **installed but disabled**; A3DP enables it per machine,
 only when the customer opts in. Two pieces:
 
-- **Bed gate (`a3dp-bedgate`)** — rift-525 profile enables the daemon at first
-  boot, but it is fail-open and dormant until a detection lane feeds it
-  verdicts (KB `GATE-CONTRACT.md`). Safe either way; no credentials involved.
+- **Bed gate (`a3dp-bedgate`)** — ships on ALL printer profiles since v0.1.4
+  (previously rift-525 only). The daemon runs at first boot but is fail-open
+  and dormant until a detection lane feeds it verdicts (KB
+  `GATE-CONTRACT.md`): a fresh unit boots with `bed_clear=True` and the
+  on-machine detection worker (`a3dp-bedgate-detect`) in **dry-run** — it
+  computes/logs metrics but has `A3DP_BEDGATE_DETECT_POST=0`, so it never
+  writes an occupancy verdict. Enabling real detection is a deliberate,
+  per-machine step (camera aimed at the bed, ROI + empty-bed references
+  calibrated per `DETECTION-SPEC.md`, then POST=1). Macro hooks live in each
+  profile's shipped macros; machines with custom macro layers (e.g.
+  a3dp4006mm) got their hooks hand-inserted on the unit — firstboot NEVER
+  auto-edits user configs. Safe either way; no credentials involved.
 - **Print monitor** — needs the llama-swap API key + confirm token. Both are
   **never baked**; they land as Mainsail-editable files:
   1. Customer (or A3DP support) opens the Mainsail file manager → `a3dp/`
@@ -279,6 +288,38 @@ klipper.service with `-a` UDS socket, timesync via systemd-timesyncd only).
   (hostnamectl is polkit-blocked); Kalico host pin bumped to
   `v2026.11.00-30-g991e1823` — required for the Cartographer probe config
   (v2026.10.00-177 has no cartographer module and rejects the lowercase
-  `probe` command registration), and the plugin ships as the pinned
-  `cartographer3d-plugin==1.10.1` pip package + 2-line
+  `probe` command registration), and the plugin ships as the
+  `cartographer3d-plugin` pip package + 2-line
   `klippy/plugins/cartographer.py` shim (same architecture as the live Rift).
+  (v0.1.4 note: the pin moved from PyPI `1.10.1` to git `be45bdd` — see
+  "What's new in v0.1.4"; PyPI 1.10.1 crashes at connect on this host pin.)
+
+## What's new in v0.1.4
+
+- **CAN-capable mcu-flashd** (`:8082` recovery flasher): the baked payload now
+  byte-matches printer-hardware `scripts/a3dp-mcu-flash` (CAN transport:
+  `canbus_query.py` enumeration, per-slot board picker, katapult-over-CAN
+  flash). CAN stays **disabled by default** (`can_interface` empty in every
+  shipped ini) — meter-idex heads are rp2040-USB and CAN units enable it
+  per-machine; no behavior change for existing profiles. The `/etc/a3dp-mcu-flashd.ini`
+  shape now matches the fleet ini (config_dir, moonraker auto-flash keys,
+  CAN keys present-but-disabled), and `/opt/a3dp/mcu-flashd-install/` ships
+  the installer + both ini variants (meter-kit default, Rift) for per-machine
+  redeploy without an SD re-flash.
+- **Bed gate on every printer profile** (rift-525, meter-idex, base): daemon +
+  systemd unit + nginx :8083 LAN-allowlist site + the on-machine
+  `a3dp-bedgate-detect` worker (ffmpeg pinned in the base packages). All
+  fail-open/dry-run defaults — the gate is present but inert on a fresh unit,
+  exactly like the reference deploy. meter-idex macros hook into its own
+  `euclid.cfg` wrappers (builtin wrappers stripped — same pattern as the
+  a3dp4006mm hand deploy); firstboot drops `A3DP_BEDGATE_MACHINE=<profile>`
+  in as a systemd drop-in so the daemon's machine label matches the unit.
+- **Cartographer plugin pin fix (rift-525 boot defect)**: PyPI
+  `cartographer3d-plugin==1.10.1` crashes klippy at connect against the
+  Kalico `991e1823` host pin when `[axis_twist_compensation]` is enabled
+  (mesh-based ATC removed `horizontal_move_z`; the rift-525 shipped
+  sensors.cfg enables it). The image now installs the plugin from git at
+  `be45bdd` — the exact tree the live Rift (.219) runs as `1.10.1.post2`.
+  Reproduced in the parse sandbox, verified fixed.
+- **Shared A3dp tree pin unchanged** (`286534f` — still upstream main tip).
+

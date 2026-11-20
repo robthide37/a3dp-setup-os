@@ -1,1 +1,4 @@
-git python3 python3-pip python3-venv python3-dev libopenjp2-7 libcurl4-openssl-dev libssl-dev liblmdb-dev libsodium-dev zlib1g-dev libjpeg-dev libopenblas-dev haveged nginx curl wget unzip usbutils udev rsync python3-serial gcc g++ make build-essential gcc-arm-none-eabi dfu-util
+git python3 python3-pip python3-venv python3-dev libopenjp2-7 libcurl4-openssl-dev libssl-dev liblmdb-dev libsodium-dev zlib1g-dev libjpeg-dev libopenblas-dev haveged nginx curl wget unzip usbutils udev rsync python3-serial gcc g++ make build-essential gcc-arm-none-eabi dfu-util ffmpeg
+# ffmpeg is NOT left to crowsnest's transitive dep list: the bed-gate
+# detection worker (services/a3dp-bedgate) decodes snapshots through the
+# ffmpeg binary — pin it so the worker path is deterministic.

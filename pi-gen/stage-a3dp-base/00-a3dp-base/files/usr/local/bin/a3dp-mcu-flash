@@ -7,8 +7,11 @@ moonraker, NO klippy involved. Complements the klippy FLASH_MCU macro happy
 path (moonraker-mcu-flasher), which requires a working print stack.
 
 Subcommands:
-  enumerate                  list BOOTSEL + katapult-bootloader + USB-serial MCU boards (JSON)
-  flash <board|serial> <uf2> flash a BOOTSEL or katapult-bootloader board from a UF2 file
+  enumerate                  list BOOTSEL + katapult-bootloader + USB-serial
+                             + CAN-bus MCU boards (JSON)
+  flash <board|serial> <uf2> flash a BOOTSEL / katapult-bootloader board from
+                             a UF2, or a CAN-mapped mcus.ini slot from an
+                             app .bin (katapult-over-CAN sequence)
   verify <board|serial>      check a board's by-id identity against its config.mcu
   full [--plan|--yes]        full update: build every mcus.ini slot from its
                              config.<slot> menuconfig at the running host version
@@ -34,6 +37,7 @@ import fnmatch
 import json
 import os
 import re
+import shlex
 import shutil
 import struct
 import subprocess
@@ -163,29 +167,124 @@ def list_serial_mcus(by_id_dir="/dev/serial/by-id"):
 # ------------------------------------------------------------------ mcus.ini
 
 def parse_mcus_ini(path):
-    """{board_name: chipid-or-serial-tail} from A3dp/flash mcus.ini sections.
-    Accepts action_command/flash_cmd lines carrying /dev/serial/by-id paths."""
+    """{board_name: {'chipid': by-id tail or None, 'canbus_uuid': uuid or
+    None}} from A3dp/flash mcus.ini sections. Accepts action_command/
+    flash_cmd lines carrying /dev/serial/by-id paths and canbus_uuid=
+    entries (a bare `canbus_uuid = <uuid>` key or one inside an action
+    string) — CAN slots are identity-mapped by uuid, not by serial."""
     boards = {}
     if not path or not os.path.isfile(path):
         return boards
     cp = configparser.ConfigParser(strict=False)
     cp.read(path)
     for sec in cp.sections():
-        for _, val in cp.items(sec):
+        entry = {"chipid": None, "canbus_uuid": None}
+        for key, val in cp.items(sec):
+            if key.strip().lower() == "canbus_uuid" and val.strip():
+                # bare ini key: canbus_uuid = <uuid>
+                entry["canbus_uuid"] = val.strip().lower()
+                continue
+            m = re.search(r"canbus_uuid=([0-9a-fA-F]+)", val)
+            if m and not entry["canbus_uuid"]:
+                entry["canbus_uuid"] = m.group(1).lower()
             m = re.search(r"/dev/serial/by-id/(\S+)", val)
-            if m:
+            if m and not entry["chipid"]:
                 mm = BY_ID_RE.search(m.group(1))
-                boards[sec] = mm.group(1) if mm else m.group(1)
-                break
+                entry["chipid"] = mm.group(1) if mm else m.group(1)
+        if entry["chipid"] or entry["canbus_uuid"]:
+            boards[sec] = entry
     return boards
 
 
 def label_serials(serials, boards):
     """Attach board names from the mcus.ini chipid map to serial entries."""
-    rev = {v: k for k, v in boards.items()}
+    rev = {v["chipid"]: k for k, v in boards.items() if v.get("chipid")}
     for s in serials:
         s["board"] = rev.get(s["chipid"])
     return serials
+
+
+# ------------------------------------------------------------------- CAN bus
+
+# canbus_query.py output (real formats, read from source 2026-11):
+#   Kalico:  "[can0] Found canbus_uuid=903d3217491e, Application: Kalico, Assigned: 0a"
+#            "[can0] Found canbus_uuid=877d699a8ef6, Application: Katapult, Unassigned"
+#   klipper: "Found canbus_uuid=903d3217491e, Application: Klipper"
+CAN_NODE_RE = re.compile(
+    r"canbus_uuid=([0-9a-fA-F]+),\s*Application:\s*([A-Za-z]+)"
+    r"(?:,\s*(?:Assigned:\s*([0-9a-fA-F]+)|Unassigned))?")
+KATAPULT_APPS = ("katapult", "canboot")
+
+
+def parse_canbus_query_output(text):
+    """[{'uuid','application','bootloader','nodeid'}] from canbus_query.py
+    stdout. `bootloader` marks nodes running katapult (CANBoot) — flashing
+    those takes the app .bin directly; app nodes need a bootloader request
+    first."""
+    nodes = []
+    seen = set()
+    for m in CAN_NODE_RE.finditer(text or ""):
+        uuid = m.group(1).lower()
+        if uuid in seen:
+            continue
+        seen.add(uuid)
+        app = m.group(2)
+        nodes.append({
+            "uuid": uuid,
+            "application": app,
+            "bootloader": app.lower() in KATAPULT_APPS,
+            "nodeid": (m.group(3) or "").lower() or None,
+        })
+    return nodes
+
+
+def can_query_command(cfg):
+    """argv to enumerate CAN nodes, or None when CAN is disabled/unconfigured.
+    ini `can_query_cmd` wins (one string, shlex-split; a `{interface}`
+    placeholder is substituted, otherwise the interface is appended);
+    otherwise `can_python` + `canbus_query` script + `can_interface`
+    (all three required). The daemon never imports python-can — the query
+    and the flashtool both run under the klippy venv python via subprocess."""
+    iface = (cfg.get("can_interface") or "").strip()
+    if not iface:
+        return None
+    qc = (cfg.get("can_query_cmd") or "").strip()
+    if qc:
+        parts = shlex.split(qc)
+        if any("{interface}" in p for p in parts):
+            return [p.replace("{interface}", iface) for p in parts]
+        return parts + [iface]
+    py = os.path.expanduser((cfg.get("can_python") or "").strip())
+    script = os.path.expanduser((cfg.get("canbus_query") or "").strip())
+    if py and script and os.path.isfile(script):
+        return [py, script, iface]
+    return None
+
+
+def query_can_nodes(cfg, run=None, timeout=15):
+    """(nodes, error) — enumerate CAN nodes by shelling out to
+    canbus_query.py. Empty + no error when CAN is disabled (no
+    can_interface)."""
+    cmd = can_query_command(cfg)
+    if not cmd:
+        if not (cfg.get("can_interface") or "").strip():
+            return [], None
+        return [], ("can_interface is set but no usable can_query_cmd / "
+                    "can_python + canbus_query (check the ini)")
+    run = run or _run
+    try:
+        r = run(cmd, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return [], f"canbus_query timed out after {timeout}s: {' '.join(cmd)}"
+    except OSError as e:
+        return [], f"canbus_query failed to run: {e}"
+    tail = ((r.stderr or "") + (r.stdout or "")).strip()[-300:]
+    if getattr(r, "returncode", 1) != 0:
+        return [], f"canbus_query rc={r.returncode}: {tail}"
+    nodes = parse_canbus_query_output(r.stdout or "")
+    for n in nodes:
+        n["iface"] = (cfg.get("can_interface") or "").strip()
+    return nodes, None
 
 
 # --------------------------------------------------------------------- uf2
@@ -207,17 +306,26 @@ def validate_uf2(path):
 
 
 def scan_firmware_dir(fw_dir):
-    """All *.uf2 under fw_dir (recursive), as [{'path', 'board', 'file'}].
-    Board = leading token before '-' or '_' (e.g. rp2040main-v1.2.uf2)."""
+    """All *.uf2 and *.bin under fw_dir (recursive), as
+    [{'path', 'board', 'file', 'kind'}]. Board = leading token before '-'
+    or '_' (e.g. rp2040main-v1.2.uf2, head0-v0.12.1.bin). .bin is the CAN /
+    katapult app-image format (klipper.bin-style); .uf2 stays rp2040 /
+    BOOTSEL."""
     out = []
     if not fw_dir or not os.path.isdir(fw_dir):
         return out
     for root, _, files in os.walk(fw_dir):
         for fn in sorted(files):
-            if not fn.lower().endswith(".uf2"):
+            low = fn.lower()
+            if low.endswith(".uf2"):
+                kind = "uf2"
+            elif low.endswith(".bin"):
+                kind = "bin"
+            else:
                 continue
             board = re.split(r"[-_]", fn, maxsplit=1)[0].lower()
-            out.append({"path": os.path.join(root, fn), "file": fn, "board": board})
+            out.append({"path": os.path.join(root, fn), "file": fn,
+                        "board": board, "kind": kind})
     return out
 
 
@@ -332,8 +440,19 @@ def flash_katapult(uf2_path, device, tool, timeout=120, run=None):
 
 def resolve_target(target, cfg, sysfs="/sys", by_id_dir="/dev/serial/by-id"):
     """Map a user-supplied board name or by-id fragment to either a BOOTSEL
-    block device or a running CDC board entry."""
+    block device, a running CDC board entry, or a CAN-mapped mcus.ini slot
+    (kind 'can'; node is None when the slot's uuid is not on the bus)."""
     bootsel = find_bootsel_volumes(sysfs=sysfs)
+    # CAN slots resolve BEFORE serial so an all-CAN machine's slot names
+    # (mcu/head0/…) cannot be shadowed by unrelated USB entries
+    can_nodes, _can_err = query_can_nodes(cfg)
+    if can_nodes:
+        tl = (target or "").lower()
+        for slot, entry in parse_mcus_ini(cfg.get("mcus_ini")).items():
+            uuid = entry.get("canbus_uuid")
+            if uuid and (slot.lower() == tl or uuid == tl):
+                node = next((n for n in can_nodes if n["uuid"] == uuid), None)
+                return ("can", {"slot": slot, "uuid": uuid, "node": node})
     serials = label_serials(list_serial_mcus(by_id_dir=by_id_dir),
                             parse_mcus_ini(cfg.get("mcus_ini")))
     # config-driven fallback: the slot name itself resolves when its
@@ -361,6 +480,225 @@ def resolve_target(target, cfg, sysfs="/sys", by_id_dir="/dev/serial/by-id"):
         if cfg_expected and s["name"] == cfg_expected:
             return ("serial", s)
     return (None, None)
+
+
+# -------------------------------------------------------------- CAN flashing
+
+def can_flashtool_cmd(cfg):
+    """[python, flashtool.py] for CAN flashing — the interpreter must have
+    python-can (the klippy venv), NOT the system python3 used for USB
+    serial flashing."""
+    py = os.path.expanduser((cfg.get("can_python") or "").strip())
+    tool = find_katapult_tool(cfg)
+    if not tool or not py:
+        return None
+    return [py, tool]
+
+
+def can_slot_identity_gate(expected, nodes):
+    """('ok'|'refuse', msg) — the node being flashed must BE the slot's
+    expected CAN uuid (same spirit as the USB identity gate). A slot with
+    no canbus_uuid in mcus.ini is refused: CAN has no by-id name to gate
+    on, so the uuid IS the identity."""
+    if not expected:
+        return "refuse", ("no canbus_uuid in the mcus.ini section for this "
+                          "slot — refusing to flash a CAN node blind")
+    hit = [n for n in (nodes or []) if n["uuid"] == expected]
+    if hit:
+        return "ok", f"CAN identity matches: {expected}"
+    return "refuse", (f"identity conflict: expected CAN uuid {expected} is "
+                      "not on the bus — refusing to flash the wrong node")
+
+
+def can_flash_slot(cfg, slot, fw_path, log=print, run=None, query=None,
+                   sleeper=time.sleep, service_active=None, print_probe=None,
+                   req_timeout=120):
+    """Katapult-over-CAN flash of one mcus.ini slot — the verified CLI
+    sequence: print-guard → stop klipper → `flashtool.py -i <iface> -u
+    <app-uuid> -r` (request the bootloader from the running app) → identify
+    the node's NEW katapult uuid by diffing the bus → `flashtool.py -i
+    <iface> -u <katapult-uuid> -f <app .bin>` → verify the app uuid is back
+    → restart klipper. App images only: a katapult bootloader image is
+    refused. Returns {'ok', 'refused', 'steps', 'msg'}."""
+    steps = []
+
+    def step(msg):
+        steps.append({"t": time.strftime("%H:%M:%S"), "msg": msg})
+        log(msg)
+
+    run = run or _run
+    if query is None:
+        query = lambda: query_can_nodes(cfg, run=run)
+
+    def fail(msg, refused=None, ok=False):
+        return {"ok": ok, "refused": refused, "steps": steps, "msg": msg}
+
+    iface = (cfg.get("can_interface") or "").strip()
+    if not iface:
+        return fail("no can_interface in the ini — CAN transport disabled",
+                    refused="can_disabled")
+    toolcmd = can_flashtool_cmd(cfg)
+    if not toolcmd:
+        return fail("CAN flashing needs can_python + katapult_flashtool in "
+                    "the ini (flashtool needs python-can from the klippy "
+                    "venv)", refused="no_tool")
+    if not os.path.isfile(fw_path):
+        return fail(f"firmware file not found: {fw_path}")
+    if not fw_path.lower().endswith(".bin"):
+        return fail("CAN/katapult targets take the app .bin image "
+                    "(klipper.bin-style), not .uf2", refused="bad_file")
+    if "katapult" in os.path.basename(fw_path).lower():
+        # the katapult bootloader slot is NEVER rewritten — app images only
+        return fail(f"refusing to flash a katapult bootloader image "
+                    f"({os.path.basename(fw_path)}) — app images only",
+                    refused="bootloader_image")
+    entry = parse_mcus_ini(cfg.get("mcus_ini")).get(slot) or {}
+    expected = entry.get("canbus_uuid")
+    step(f"[{slot}] querying CAN bus {iface}")
+    nodes, err = query()
+    if err:
+        return fail(f"CAN enumeration failed: {err}", refused="can_query")
+    status, gmsg = can_slot_identity_gate(expected, nodes)
+    step(f"[{slot}] identity: {gmsg}")
+    if status != "ok":
+        return fail(gmsg, refused="identity")
+    node = next(n for n in nodes if n["uuid"] == expected)
+    reachable, state = (print_probe() if print_probe else
+                        moonraker_print_state(cfg["moonraker_url"]))
+    if reachable and state in ACTIVE_PRINT_STATES:
+        step(f"REFUSED: a print is in progress (print_stats.state={state})")
+        return fail("a print is in progress — never flash a board mid-print",
+                    refused="print_active")
+    was_active = (_klipper_service_active()
+                  if service_active is None else service_active)
+    kat_before = {n["uuid"] for n in nodes if n["bootloader"]}
+    try:
+        if node["bootloader"]:
+            step(f"[{slot}] node {expected} is already in the katapult "
+                 "bootloader — flashing directly")
+            kat_uuid = expected
+        else:
+            if was_active:
+                reachable, state = (print_probe() if print_probe else
+                                    moonraker_print_state(cfg["moonraker_url"]))
+                if reachable and state in ACTIVE_PRINT_STATES:
+                    step(f"REFUSED: print started between guard and service "
+                         f"stop (print_stats.state={state}) — "
+                         f"{cfg['klipper_service']} left running")
+                    return fail("print started between guard and service stop",
+                                refused="print_active")
+                step(f"stopping {cfg['klipper_service']} service (the CAN "
+                     "node must see the bootloader request uninterrupted)")
+                r = _sysctl("stop", cfg["klipper_service"])
+                if r.returncode != 0:
+                    step(f"FAILED to stop {cfg['klipper_service']}: "
+                         f"{(r.stderr or r.stdout).strip()} — aborting "
+                         "(service left as-was: still stopping)")
+                    return fail(f"failed to stop {cfg['klipper_service']}")
+            step(f"[{slot}] bootloader request: "
+                 f"{' '.join(toolcmd + ['-i', iface, '-u', expected, '-r'])}")
+            r = run(toolcmd + ["-i", iface, "-u", expected, "-r"],
+                    timeout=req_timeout)
+            tail = ((r.stdout or "") + (r.stderr or "")).strip()[-400:]
+            if getattr(r, "returncode", 1) != 0:
+                step(f"[{slot}] bootloader request FAILED "
+                     f"(rc={r.returncode}): {tail}")
+                return fail(f"bootloader request failed: {tail}")
+            step("[katapult] Bootloader Request Complete")
+            kat_uuid, new_kat, nodes2 = None, [], []
+            for _ in range(5):
+                sleeper(1.0)
+                nodes2, err2 = query()
+                if err2:
+                    continue
+                new_kat = [n for n in nodes2 if n["bootloader"]
+                           and n["uuid"] not in kat_before]
+                if len(new_kat) == 1:
+                    kat_uuid = new_kat[0]["uuid"]
+                    break
+                if len(new_kat) > 1:
+                    break
+            if kat_uuid is None:
+                detail = ([n["uuid"] for n in new_kat]
+                          if nodes2 else "query failed")
+                step(f"[{slot}] FAILED: could not identify the node's "
+                     f"katapult uuid after the bootloader request "
+                     f"(new bootloader nodes: {detail})")
+                return fail("ambiguous or missing katapult uuid after "
+                            "bootloader request")
+            step(f"[{slot}] node entered the katapult bootloader "
+                 f"(uuid {kat_uuid})")
+        step(f"[{slot}] flashing {os.path.basename(fw_path)}: "
+             f"{' '.join(toolcmd + ['-i', iface, '-u', kat_uuid, '-f', fw_path])}")
+        r = run(toolcmd + ["-i", iface, "-u", kat_uuid, "-f", fw_path],
+                timeout=FLASH_TIMEOUT)
+        tail = ((r.stdout or "") + (r.stderr or "")).strip()[-500:]
+        if getattr(r, "returncode", 1) != 0:
+            step(f"[{slot}] FLASH FAILED (rc={r.returncode}): {tail}")
+            return fail(f"flashtool failed: {tail}")
+        step(f"[{slot}] flashtool OK: {tail[-200:] or 'Programming Complete'}")
+        check = "app uuid not seen back on the bus yet (check klippy when " \
+                "it starts)"
+        for _ in range(5):
+            sleeper(1.0)
+            nodes3, err3 = query()
+            if err3:
+                continue
+            hit = next((n for n in nodes3 if n["uuid"] == expected
+                        and not n["bootloader"]), None)
+            if hit:
+                check = (f"app uuid {expected} back on the bus "
+                         f"(Application: {hit['application']})")
+                break
+        step(f"[{slot}] {check}")
+        return fail(check, ok=True)
+    finally:
+        if was_active:
+            step(f"starting {cfg['klipper_service']} service")
+            r = _sysctl("start", cfg["klipper_service"])
+            if r.returncode != 0:
+                step(f"WARNING: could not start {cfg['klipper_service']}: "
+                     f"{(r.stderr or r.stdout).strip()}")
+
+
+def slot_transports(cfg, serials, bootsel, can_nodes):
+    """Per mcus.ini slot: which transport the board is reachable on right
+    now — can | can-katapult | usb-serial | usb-katapult |
+    bootsel-unidentified | not-found. Pure; enumerate_payload feeds it.
+    A CAN slot is matched by its canbus_uuid (the katapult bootloader
+    announces a DIFFERENT uuid than the app, hence the two CAN states)."""
+    slots = []
+    serial_by_chip = {s["chipid"]: s for s in (serials or [])
+                      if s.get("chipid")}
+    single_bootsel = bootsel[0] if bootsel and len(bootsel) == 1 else None
+    for slot, entry in parse_mcus_ini(cfg.get("mcus_ini")).items():
+        row = {"slot": slot, "canbus_uuid": entry.get("canbus_uuid"),
+               "chipid": entry.get("chipid"), "transport": "not-found",
+               "detail": "not enumerated on any transport"}
+        node = None
+        if row["canbus_uuid"]:
+            node = next((n for n in (can_nodes or [])
+                         if n["uuid"] == row["canbus_uuid"]), None)
+        if node:
+            row["transport"] = ("can-katapult" if node["bootloader"]
+                                else "can")
+            row["detail"] = (f"uuid {node['uuid']} Application: "
+                             f"{node['application']}"
+                             + (f", node id {node['nodeid']}"
+                                if node.get("nodeid") else ""))
+        elif row["chipid"] and row["chipid"] in serial_by_chip:
+            s = serial_by_chip[row["chipid"]]
+            row["transport"] = ("usb-katapult" if s["kind"] == "katapult"
+                                else "usb-serial")
+            row["detail"] = s["name"]
+        elif single_bootsel:
+            row["transport"] = "bootsel-unidentified"
+            row["detail"] = (f"single BOOTSEL board on the bus "
+                             f"({single_bootsel['block_dev']}) is "
+                             "unidentifiable — may be this slot; use the "
+                             "BOOTSEL picker")
+        slots.append(row)
+    return slots
 
 
 # ------------------------------------------------------------------ version
@@ -393,6 +731,45 @@ def klippy_mcu_versions(log_path):
 
 
 # ------------------------------------------------- deterministic identity
+
+def klippy_mcu_transport(log_path, slot):
+    """Transport klippy uses for MCU <slot>, parsed from the klippy.log
+    config dump (the raw printer.cfg content: a '[slot]' header followed by
+    'canbus_uuid = ...' or 'serial = ...' — the dump writes ' = ', a raw
+    included copy may use ':'). Returns {'serial': ..., 'canbus_uuid': ...}
+    for the LATEST dump in the log (restarts append a fresh dump), or None
+    when unknown (klippy never ran / no dump / no such section) — callers
+    must degrade to the pre-existing rules when None.
+
+    Ground truth for whether a slot even HAS a USB flash path: Rift 2026-11-17
+    — klippy drives the f446 via canbus_uuid (RESERVE_PINS_CAN=PD0,PD1), so
+    any 1d50:* USB serial on the bus is someone else's board."""
+    if not log_path or not os.path.isfile(log_path):
+        return None
+    header = re.compile(r"^\[(.+)\]$")
+    keyval = re.compile(r"^(serial|canbus_uuid)\s*[:=]\s*(\S+)")
+    best = None
+    cur_name, cur_kv = None, {}
+    try:
+        with open(log_path, errors="replace") as f:
+            for line in f:
+                s = line.strip()
+                m = header.match(s)
+                if m:
+                    if cur_name == slot and cur_kv:
+                        best = cur_kv
+                    cur_name, cur_kv = m.group(1), {}
+                    continue
+                if cur_name == slot:
+                    km = keyval.match(s)
+                    if km:
+                        cur_kv[km.group(1)] = km.group(2)
+    except OSError:
+        return None
+    if cur_name == slot and cur_kv:
+        best = cur_kv
+    return best
+
 
 def parse_kconfig_identity(path):
     """USB identity a firmware build carries, from its menuconfig file
@@ -463,19 +840,26 @@ def live_flash_fallback(expected, ident, serials, other_expected=()):
     `make flash FLASH_DEVICE=<expected>` died with `Unable to find tty device`
     for both slots, and the manual fix was to target the CURRENT stock by-id).
 
-    Candidates: live serials not claimed by any slot's expected name. A name
-    containing the config's CONFIG_MCU token wins (stock klipper firmware
-    enumerates as usb-Klipper_stm32f446xx_<chipid>-if00 — same product token);
-    otherwise the candidate pool must be exactly one. Returns the by-id
-    filename, or None when no unique candidate exists."""
+    Candidates: live serials not claimed by any slot's expected name, AND
+    carrying the config's CONFIG_MCU chip token (stock klipper firmware
+    enumerates as usb-Klipper_stm32f446xx_<chipid>-if00 — same product token).
+    Exactly one such candidate wins; anything else returns None.
+
+    t_008aaeed (Rift 2026-11-17): the old pool-of-one rule let the ONLY
+    unclaimed 1d50:* device win even when its product token could not be this
+    slot's board — the plan targeted the Cartographer probe. A device that
+    does not carry the chip token is never evidence; refusing beats guessing.
+    (The CAN-transport guard in slot_plan is the primary protection; this is
+    the defense in depth for hosts where klippy.log gives no transport.)"""
     if not expected or not ident:
         return None
     taken = set(other_expected or ()) | {expected}
     cands = [s["name"] for s in (serials or []) if s["name"] not in taken]
     mcu = ident.get("mcu")
-    chip = [n for n in cands if mcu and mcu.lower() in n.lower()]
-    pool = chip or cands
-    return pool[0] if len(pool) == 1 else None
+    if not mcu:
+        return None
+    chip = [n for n in cands if mcu.lower() in n.lower()]
+    return chip[0] if len(chip) == 1 else None
 
 
 def identity_gate(board, cfg, serials=None, allow_change=False):
@@ -645,6 +1029,24 @@ def slot_plan(slot, cfg, serials, allow_change=False, other_expected=None):
     p["gate"], p["gate_msg"] = status, gmsg
     if status == "refuse":
         p["reason"] = gmsg
+        return p
+    # CAN-transport guard (t_008aaeed, Rift 2026-11-17): when klippy drives
+    # this MCU over canbus_uuid the slot has NO USB flash path — neither the
+    # expected name (a CAN build enumerates no USB CDC at all) nor the
+    # stock-fw fallback (which would pool some unrelated 1d50:* device, e.g.
+    # the Cartographer probe). Skip with the CAN flashing path instead.
+    trans = klippy_mcu_transport(cfg.get("klippy_log"), slot)
+    if trans and trans.get("canbus_uuid"):
+        can = trans["canbus_uuid"]
+        p["gate"], p["gate_msg"] = "warn", (
+            f"klippy talks to MCU '{slot}' over canbus_uuid {can} — this "
+            "slot has no USB flash path")
+        p["reason"] = (
+            f"MCU '{slot}' is on canbus_uuid {can} (CANBUS transport) — "
+            "USB flash N/A; the stock-fw USB fallback is refused (it would "
+            "target an unrelated 1d50:* device). Flash over CAN via katapult "
+            f"flashtool (flashtool.py -u {can}) or bench-flash the board "
+            "off-printer")
         return p
     expected = expected_byid(ident)
     if expected:
@@ -954,6 +1356,16 @@ config_dir = ~/printer_data/config/flash/config
 klippy_log = ~/printer_data/logs/klippy.log
 # katapult bootloader flashtool (used when a board enumerates as usb-katapult_*)
 katapult_flashtool = ~/katapult/scripts/flashtool.py
+# CAN transport (katapult-over-CAN flash, e.g. Huvud/STM32 toolboards).
+# Disabled while can_interface is empty. Enumeration shells out to
+# canbus_query.py under can_python (needs python-can — the klippy venv);
+# nothing is imported, the daemon stays stdlib-only.
+can_interface =
+can_python = ~/klippy-env/bin/python
+canbus_query = ~/klipper/scripts/canbus_query.py
+# full command override for the CAN query (wins over the two keys above);
+# '{interface}' is substituted, otherwise the interface is appended
+can_query_cmd =
 # full-update targets
 moonraker_url = http://127.0.0.1:7125
 klipper_dir = ~/klipper
@@ -981,6 +1393,11 @@ def load_cfg(path):
         "klippy_log": expand("klippy_log", "~/printer_data/logs/klippy.log"),
         "katapult_flashtool": expand("katapult_flashtool",
                                      "~/katapult/scripts/flashtool.py"),
+        "can_interface": (svc.get("can_interface", "") if svc else "") or "",
+        "can_python": expand("can_python", "~/klippy-env/bin/python") or "",
+        "canbus_query": expand("canbus_query",
+                               "~/klipper/scripts/canbus_query.py") or "",
+        "can_query_cmd": (svc.get("can_query_cmd", "") if svc else "") or "",
         "moonraker_url": (svc.get("moonraker_url", "http://127.0.0.1:7125")
                           if svc else "http://127.0.0.1:7125"),
         "klipper_dir": expand("klipper_dir", "~/klipper"),
@@ -1018,6 +1435,16 @@ only.</p>
 <p>Board in BOOTSEL: <select id=b></select> Firmware: <select id=f></select>
 <button onclick=doFlash()>FLASH (write UF2)</button></p>
 <div id=log>ready.</div>
+<h2>Per-slot board picker — mcus.ini slots</h2>
+<p>One row per mcus.ini slot. CAN rows target the node by its canbus_uuid
+(mcus.ini <code>canbus_uuid=</code>): flashing stops the Klipper service,
+requests the katapult bootloader from the running app, writes the app .bin
+via the node's katapult uuid and restarts Klipper. Needs the CAN interface up
+(OS dependency) and python-can in the klippy venv. APP IMAGES ONLY — the
+katapult bootloader slot is never rewritten. A lone BOOTSEL board is
+unidentifiable, so it stays in the table above.</p>
+<table id=st><tr><th>Slot</th><th>Transport</th><th>Detail</th><th>Action</th></tr></table>
+<div id=clog style='white-space:pre-wrap;background:#000;border:1px solid #333;padding:1rem;min-height:1rem;margin:.5rem 0'>CAN: disabled (no can_interface in the ini).</div>
 <h2>Full update — auto-flash every MCU to the host build</h2>
 <p>Builds each mcus.ini slot from its flash/config/config.&lt;slot&gt; menuconfig
 at the running host version and flashes it — identity-gated, refused while a
@@ -1055,6 +1482,26 @@ async function refresh(){
     o.value='bootsel:'+x.block_dev; o.textContent=x.block_dev+' ('+x.usb_dev+')'; b.appendChild(o); }
   for (const s of d.serial){ if (s.kind==='katapult'){ const o=document.createElement('option');
     o.value='kat:'+s.name; o.textContent=s.name+' (katapult bootloader)'; b.appendChild(o); } }
+  const st = document.getElementById('st'); st.innerHTML = st.rows[0].outerHTML;
+  for (const s of (d.slots||[])){ const r = st.insertRow();
+    if (s.transport.indexOf('can') === 0)
+      r.bgColor = s.transport === 'can' ? '#1a2a1a' : '#1a3a1a';
+    r.insertCell().textContent = s.slot;
+    r.insertCell().textContent = s.transport;
+    r.insertCell().textContent = s.detail;
+    const c = r.insertCell();
+    const btn = document.createElement('button'); btn.textContent = 'FLASH SLOT';
+    btn.onclick = function(){ doFlashSlot(s.slot); };
+    c.appendChild(btn); }
+  const can = d.can || {interface:'', nodes:[], error:null};
+  const NL = String.fromCharCode(10);
+  let cnote = 'CAN: ' + (can.interface ? can.interface
+                                       : 'disabled (no can_interface in the ini)');
+  for (const n of (can.nodes||[]))
+    cnote += NL + n.uuid + '  Application: ' + n.application
+           + (n.nodeid ? '  node id ' + n.nodeid : '');
+  if (can.error) cnote += NL + 'CAN query error: ' + can.error;
+  document.getElementById('clog').textContent = cnote;
   const f = document.getElementById('f'); f.innerHTML='';
   for (const x of d.firmware){ const o=document.createElement('option');
     o.value=x.path; o.textContent=x.file; f.appendChild(o); }
@@ -1077,6 +1524,16 @@ async function doFlash(){
 }
 function log(m){ document.getElementById('log').textContent = m; }
 function logf(m){ document.getElementById('flog').textContent = m; }
+async function doFlashSlot(slot){
+  const f = document.getElementById('f');
+  if (!f.value) { log('Select a firmware file first (under the board table).'); return; }
+  if (!confirm('Stop Klipper and flash CAN slot ' + slot + ' from ' + f.value + '?')) return;
+  const r = await fetch('/api/flash', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({kind:'can', slot: slot, file: f.value})});
+  const j = await r.json();
+  log((j.ok ? 'OK: ' : 'FAIL: ') + j.msg);
+  refresh();
+}
 async function doFullPlan(){
   const d = await (await fetch('/api/full/plan')).json();
   const t = document.getElementById('ft'); t.innerHTML = t.rows[0].outerHTML;
@@ -1113,16 +1570,21 @@ refresh(); setInterval(refresh, 15000);
 
 
 def enumerate_payload(cfg):
+    bootsel = find_bootsel_volumes()
     serials = label_serials(list_serial_mcus(), parse_mcus_ini(cfg["mcus_ini"]))
+    can_nodes, can_err = query_can_nodes(cfg)
     ident = {}
-    for name in parse_mcus_ini(cfg["mcus_ini"]):
+    for name, entry in parse_mcus_ini(cfg["mcus_ini"]).items():
         e = expected_byid(parse_kconfig_identity(config_file_for(name, cfg)))
         if e:
             ident[name] = e
     return {
-        "bootsel": find_bootsel_volumes(),
+        "bootsel": bootsel,
         "serial": serials,
         "identity": ident,
+        "can": {"interface": (cfg.get("can_interface") or "").strip(),
+                "nodes": can_nodes, "error": can_err},
+        "slots": slot_transports(cfg, serials, bootsel, can_nodes),
         "firmware": scan_firmware_dir(cfg["firmware_dir"]),
         "firmware_dir": cfg["firmware_dir"],
         "versions": klippy_mcu_versions(cfg["klippy_log"]),
@@ -1210,6 +1672,17 @@ class Handler(BaseHTTPRequestHandler):
                 uf2 = alt
             else:
                 return self._json({"ok": False, "msg": f"firmware file not found: {uf2}"})
+        if req.get("kind") == "can":
+            if FULL_JOB["running"]:
+                return self._json({"ok": False, "msg": "a full update is "
+                                   "running — wait for it to finish"})
+            res = can_flash_slot(self.cfg, str(req.get("slot") or ""), uf2,
+                                 log=lambda m: None)
+            msg = (res.get("msg")
+                   or "; ".join(s["msg"] for s in res["steps"]))
+            return self._json({"ok": res["ok"], "msg": msg,
+                               "refused": res.get("refused"),
+                               "steps": res["steps"]})
         before = list_serial_mcus()
         allow = bool(req.get("allow_identity_change"))
         board = req.get("board") or ""
@@ -1268,15 +1741,28 @@ def cmd_enumerate(cfg, as_json):
               + (f"  board={s['board']}" if s["board"] else ""))
     for b in payload["bootsel"]:
         print(f"BOOTSEL {b['usb_dev']}  {b['block_dev']}  ({b['label']}) — flashable")
+    can = payload["can"]
+    if can["interface"]:
+        print(f"CAN bus {can['interface']}:")
+        for n in can["nodes"]:
+            print(f"  {n['application']:8s} uuid={n['uuid']}"
+                  + (f" nodeid={n['nodeid']}" if n.get("nodeid") else ""))
+        if can["error"]:
+            print(f"  query error: {can['error']}")
+        elif not can["nodes"]:
+            print("  no nodes found")
+    for s in payload["slots"]:
+        print(f"slot {s['slot']:12s} {s['transport']:20s} {s['detail']}")
     kats = [s for s in payload["serial"] if s.get("kind") == "katapult"]
     if kats:
         print("katapult flashtool: "
               + (payload.get("katapult_tool")
                  or "NOT FOUND (clone katapult / set katapult_flashtool)"))
-    if not payload["serial"] and not payload["bootsel"]:
+    if not payload["serial"] and not payload["bootsel"] \
+            and not payload["can"]["nodes"]:
         print("no MCU boards found")
     print(f"firmware dir: {payload['firmware_dir']} "
-          f"({len(payload['firmware'])} .uf2 file(s))")
+          f"({len(payload['firmware'])} firmware file(s), .uf2/.bin)")
     return 0
 
 
@@ -1285,7 +1771,8 @@ def cmd_flash(cfg, target, uf2, allow_change=False, board_hint=None):
     if kind is None:
         print(f"target '{target}' not found — run enumerate. A board must be in "
               "BOOTSEL mode (hold BOOTSEL while plugging USB) for the "
-              "Klipper-independent path.", file=sys.stderr)
+              "Klipper-independent path. CAN slots need a canbus_uuid in "
+              "mcus.ini.", file=sys.stderr)
         return 2
     if kind == "serial":
         print(f"'{target}' is a running Klipper board ({obj['name']}) — the "
@@ -1294,6 +1781,18 @@ def cmd_flash(cfg, target, uf2, allow_change=False, board_hint=None):
               "flasher while klipper works, or hold BOOTSEL (or enter katapult) "
               "and re-run.", file=sys.stderr)
         return 3
+    if kind == "can":
+        if obj.get("node") is None:
+            print(f"CAN identity conflict: slot '{obj['slot']}' expects CAN "
+                  f"uuid {obj['uuid']} which is not on the bus — refusing "
+                  "(run enumerate to see the live nodes)", file=sys.stderr)
+            return 5
+        res = can_flash_slot(cfg, obj["slot"], uf2, log=print)
+        if res.get("msg"):
+            print(res["msg"])
+        if res.get("refused"):
+            return 5
+        return 0 if res["ok"] else 1
     board = board_hint or (obj.get("board") if obj else None)
     status, gmsg = identity_gate(board, cfg, list_serial_mcus(), allow_change)
     print(f"identity: {gmsg}")
@@ -1376,6 +1875,17 @@ def cmd_verify(cfg, target, by_id_dir="/dev/serial/by-id", sysfs="/sys"):
         print("BOOTSEL board carries no identity until flashed — flash first, "
               "then verify", file=sys.stderr)
         return 2
+    if kind == "can":
+        if obj.get("node") is None:
+            print(f"CAN slot '{obj['slot']}' expects uuid {obj['uuid']} — "
+                  "not on the bus", file=sys.stderr)
+            return 4
+        node = obj["node"]
+        print(f"OK: slot '{obj['slot']}' uuid {obj['uuid']} on the bus "
+              f"(Application: {node['application']}"
+              + (f", node id {node['nodeid']}" if node.get("nodeid") else "")
+              + ")")
+        return 0
     board = obj.get("board")
     if not board and os.path.isfile(config_file_for(target, cfg) or ""):
         # no mcus.ini label — but a config.<target> exists: the target IS the
@@ -1403,24 +1913,32 @@ def main():
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--cfg", default="/etc/a3dp-mcu-flashd.ini",
                         help="service ini (default /etc/a3dp-mcu-flashd.ini)")
+    # subparser copies of --cfg must NOT clobber a --cfg given before the
+    # subcommand: argparse applies subparser defaults over the main
+    # namespace for the same dest (py3.11 on .101 — `--cfg X enumerate`
+    # silently read /etc). SUPPRESS keeps the main-parser value.
+    sub_common = argparse.ArgumentParser(add_help=False)
+    sub_common.add_argument("--cfg", default=argparse.SUPPRESS,
+                            help=argparse.SUPPRESS)
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0],
                                  parents=[common])
     sub = ap.add_subparsers(dest="cmd", required=True)
     # --cfg accepted before AND after the subcommand (systemd unit uses the latter)
-    sub.add_parser("enumerate", parents=[common]).add_argument(
+    sub.add_parser("enumerate", parents=[sub_common]).add_argument(
         "--json", action="store_true")
-    p = sub.add_parser("flash", parents=[common])
+    p = sub.add_parser("flash", parents=[sub_common])
     p.add_argument("target", help="board name (mcus.ini), chipid or block dev")
-    p.add_argument("uf2", help="firmware .uf2 file")
+    p.add_argument("uf2", help="firmware file (.uf2 for BOOTSEL/katapult USB, "
+                   ".bin for CAN slots)")
     p.add_argument("--board", help="board slot name (mcus.ini section) for the "
                    "config.mcu identity gate, when the target is a BOOTSEL board")
     p.add_argument("--allow-identity-change", action="store_true",
                    help="flash even when config.mcu's identity conflicts with "
                    "the live board (deliberate rename — update printer.cfg "
                    "+ mcus.ini afterwards)")
-    sub.add_parser("verify", parents=[common]).add_argument(
+    sub.add_parser("verify", parents=[sub_common]).add_argument(
         "target", help="board name (mcus.ini), chipid or by-id fragment")
-    p = sub.add_parser("full", parents=[common],
+    p = sub.add_parser("full", parents=[sub_common],
                        help="full update: build+flash every mcus.ini slot at "
                             "the host build (identity-gated, print-guarded)")
     p.add_argument("--plan", action="store_true",
@@ -1440,7 +1958,7 @@ def main():
                    help="flash without rebuilding (uses the last build)")
     p.add_argument("--yes", action="store_true",
                    help="execute without the plan prompt")
-    sub.add_parser("serve", parents=[common]).add_argument("--port", type=int)
+    sub.add_parser("serve", parents=[sub_common]).add_argument("--port", type=int)
     args = ap.parse_args()
     cfg = load_cfg(args.cfg)
     if args.cmd == "enumerate":

@@ -168,6 +168,17 @@ fi
 #       started directly (timer-driven oneshot convention)
 #   config.ini.example   -> seeded as config.ini if the unit dir has none
 #   nginx/*.conf         -> sites-available + enabled
+# Bed-gate machine label: the a3dp-bedgate daemon labels its state dump / web
+# UI with the machine profile (A3DP_BEDGATE_MACHINE env, default a3dp525).
+# The shipped unit bakes no label (one image, many profiles), so firstboot
+# drops the selected profile in as a systemd drop-in BEFORE the services loop
+# starts the daemon. Label only — the fail-open/dry-run behavior is identical.
+if [ -f /opt/a3dp/services/a3dp-bedgate/a3dp-bedgate.service ]; then
+  install -d -m 0755 /etc/systemd/system/a3dp-bedgate.service.d
+  printf 'Environment=A3DP_BEDGATE_MACHINE=%s\n' "$PROFILE" \
+    > /etc/systemd/system/a3dp-bedgate.service.d/10-machine.conf
+fi
+
 DISABLED_UNITS=""
 if [ -f "$PROFILE_DIR/services.list" ]; then
   while read -r svc; do

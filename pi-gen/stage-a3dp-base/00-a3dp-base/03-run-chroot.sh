@@ -12,6 +12,10 @@ git clone https://github.com/Arksine/katapult.git /home/pi/katapult
 chmod 0755 /usr/local/bin/a3dp-mcu-flash
 ln -sf /etc/nginx/sites-available/a3dp-mcu-flash /etc/nginx/sites-enabled/a3dp-mcu-flash
 install -d -o pi -g pi -m 0755 /home/pi/printer_data/config/firmware
+install -d -o pi -g pi -m 0755 /home/pi/printer_data/config/flash/config
+# in-image flasher redeploy kit (installer + payload + ini variants); see its README
+chmod 0755 /opt/a3dp/mcu-flashd-install/a3dp-mcu-flashd-install.sh \
+           /opt/a3dp/mcu-flashd-install/a3dp-mcu-flash
 if [ ! -e /home/pi/printer_data/config/firmware/README.md ]; then
 cat > /home/pi/printer_data/config/firmware/README.md <<'EOF'
 # Versioned MCU firmware store

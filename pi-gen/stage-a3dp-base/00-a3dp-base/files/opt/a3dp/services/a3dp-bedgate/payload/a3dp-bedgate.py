@@ -19,9 +19,10 @@ Responsibilities (coder side of the split):
   - Fail-open resets: startup, systemd ExecStop, detection-verdict staleness.
 
 Warning layer (Moonraker v0.11.0 has NO announcements post API — verified 404):
-  klippy console RESPOND TYPE=error/command + M117. klippy prompts
-  (action:prompt_*) are template-only and CANNOT be raised from a raw gcode
-  script — documented gap, console+M117 are the live surface.
+  klippy console RESPOND TYPE=error/command + M117. Override prompt popup
+  (Rob, 2026-11-20): emitted by the machine-side `_BED_GATE_PAUSE_PROMPT`
+  macro (bed-gate.cfg) — the daemon calls it on gate pause and on escalation;
+  a raw gcode script still cannot raise prompts directly, the macro owns them.
 
 Stdlib only. Unit tests: scripts/test_a3dp-bedgate.py.
 """
@@ -41,9 +42,12 @@ import urllib.request
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-MACHINE = "a3dp525"
 GATE = "BED_GATE"
 CHECK = "_BED_GATE_CHECK"
+# Gate-triggered pause goes through the machine-side macro (bed-gate.cfg):
+# it guards the PAUSE to state == "printing" (no double-park on retry) and
+# pops the override prompt in Mainsail (pause popup only, Rob 2026-11-20).
+PAUSE_GCODE = "_BED_GATE_PAUSE_PROMPT"
 
 
 def log(msg):
@@ -58,6 +62,7 @@ class Config:
     # the daemon itself binds the internal loopback port below.
     host: str = "127.0.0.1"
     port: int = 8084
+    machine: str = "a3dp525"
     moonraker_http: str = "http://127.0.0.1:7125"
     ws_host: str = "127.0.0.1"
     ws_port: int = 7125
@@ -78,6 +83,7 @@ class Config:
         e = os.environ.get
         c.host = e("A3DP_BEDGATE_HOST", c.host)
         c.port = int(e("A3DP_BEDGATE_PORT", c.port))
+        c.machine = e("A3DP_BEDGATE_MACHINE", c.machine)
         c.moonraker_http = e("A3DP_BEDGATE_MOONRAKER", c.moonraker_http)
         c.ws_host = e("A3DP_BEDGATE_WS_HOST", c.ws_host)
         c.ws_port = int(e("A3DP_BEDGATE_WS_PORT", c.ws_port))
@@ -704,7 +710,7 @@ class BedGate:
         retry."""
         for attempt in range(3):
             try:
-                self.moon.post_script("PAUSE")
+                self.moon.post_script(PAUSE_GCODE)
                 self.moonraker_ok = True
                 return True
             except MoonError as e:
@@ -731,6 +737,10 @@ class BedGate:
                "then RESUME (logged override)")
         self.console("error", msg)
         self.m117("Bed STILL occupied - paused. Remove part, then RESUME (logged override)")
+        # Re-show the override popup (contract §3.4: escalation = error + prompt).
+        # _BED_GATE_PAUSE_PROMPT guards its PAUSE to state=="printing" so this
+        # cannot double-park an already-paused job; the popup always shows.
+        self._script(PAUSE_GCODE, "escalate_prompt")
         p["escalations"] = k
         self.event("gate_escalation", job=p["job"], n=k)
 
@@ -792,7 +802,7 @@ class BedGate:
                 v["fresh"] = v["age_s"] <= self.cfg.verdict_ttl_s
             return {
                 "ok": True,
-                "machine": MACHINE,
+                "machine": self.cfg.machine,
                 "now": now,
                 "config": {
                     "heartbeat_s": self.cfg.heartbeat_s,
@@ -867,8 +877,9 @@ def make_handler(gate):
             if self.path == "/api/state":
                 self._send(200, gate.state_dump())
             elif self.path == "/":
-                self._send(200, _PAGE.replace("%MACHINE%", MACHINE).encode(),
-                           "text/html; charset=utf-8")
+                self._send(200, _PAGE.replace(
+                    "%MACHINE%", gate.cfg.machine).encode(),
+                    "text/html; charset=utf-8")
             else:
                 self._send(404, {"ok": False, "msg": "not found"})
 

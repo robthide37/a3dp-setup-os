@@ -389,9 +389,11 @@ class TestIntegration(unittest.TestCase):
         self.g.apply_status({"print_stats": {"state": "printing",
                                              "print_duration": 0,
                                              "filename": "test.gcode"}})
-        self.assertTrue(wait_for(lambda: any("PAUSE" in s for s in self.fk.scripts)))
+        self.assertTrue(wait_for(lambda: any(
+            bg.PAUSE_GCODE in s for s in self.fk.scripts)))
         s = self.scripts_join()
-        self.assertIn("PAUSE", s)
+        self.assertIn(bg.PAUSE_GCODE, s)   # pause goes via the prompt macro
+        self.assertNotIn("\nPAUSE\n", "\n".join(self.fk.scripts))
         self.assertIn("RESPOND TYPE=error", s)
         self.assertIn("M117", s)
         self.assertIsNotNone(self.g.pause_tracking)
@@ -410,8 +412,8 @@ class TestIntegration(unittest.TestCase):
         self.assertTrue(wait_for(lambda: self.g.pause_tracking is not None,
                                  timeout=20))
         time.sleep(0.5)
-        pauses = [s for s in self.fk.scripts if s.strip() == "PAUSE"]
-        self.assertEqual(len(pauses), 1)      # exactly one PAUSE sent
+        pauses = [s for s in self.fk.scripts if s.strip() == bg.PAUSE_GCODE]
+        self.assertEqual(len(pauses), 1)      # exactly one pause sent
         self.assertTrue(self.g.pause_tracking)
 
     def test_job_start_override_passes_no_pause(self):
@@ -478,6 +480,7 @@ class TestIntegration(unittest.TestCase):
         # past threshold: first escalation
         self.g.escalation_sweep(time.time() + self.cfg.escalate_after_s + 0.1)
         self.assertIn("RESPOND TYPE=error", self.scripts_join())
+        self.assertIn(bg.PAUSE_GCODE, self.scripts_join())  # prompt re-shown
         self.assertEqual(self.g.pause_tracking["escalations"], 1)
         # before next repeat: no second
         self.g.escalation_sweep(time.time() + self.cfg.escalate_after_s + 0.2)

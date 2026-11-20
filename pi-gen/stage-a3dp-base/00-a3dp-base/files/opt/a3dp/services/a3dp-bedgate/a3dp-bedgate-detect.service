@@ -1,0 +1,32 @@
+[Unit]
+Description=A3DP bed-gate on-machine detection worker (DRY-RUN default)
+# On-machine reference-diff occupancy worker per
+# /home/pi/a3dp-bedgate/DETECTION-SPEC.md. Occupancy POSTING IS OFF by default
+# (A3DP_BEDGATE_DETECT_POST=0): the worker computes and logs every metric but
+# never writes a verdict to the gate until a human calibrates the camera ROI
+# and captures the empty-bed references per spec, then sets
+# A3DP_BEDGATE_DETECT_POST=1 (drop-in or environment edit) DELIBERATELY.
+After=network-online.target moonraker.service crowsnest.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/a3dp-bedgate
+# klippy-env's python carries numpy (the only non-stdlib import); the worker
+# never imports klippy modules or touches klipper state.
+ExecStart=/home/pi/klippy-env/bin/python /home/pi/a3dp-bedgate/a3dp-bedgate-detect.py
+# The worker must never contend with klippy/moonraker for CPU or IO.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/pi/printer_data/logs /home/pi/a3dp-bedgate
+
+[Install]
+WantedBy=multi-user.target

@@ -36,6 +36,40 @@ problem, robust and cheap, unlike failure detection:
 - **Evaluate only when idle:** no frames while printing/homing (motion blur + the part
   itself) except the deliberate mid-print 120 s marking per contract.
 
+## On-board experiment: a3dp4006mm Pi 5 (t_39bbe296, 2026-11-20)
+
+Worker: `a3dp-bedgate-detect.py`, systemd `a3dp-bedgate-detect.service`
+(Nice=10, IOSchedulingPriority=7), runs under klippy-env python (numpy 1.26.4;
+frames via ustreamer snapshot → ffmpeg → raw gray; no PIL). **Dry-run mode:
+POSTING OFF** — see blocker below. Metrics JSONL:
+`~/printer_data/logs/a3dp-bedgate-detect.jsonl`.
+
+Measured (Pi 5 4GB, idle machine, 1 frame / 5 s, full 640x480 frame):
+- CPU (self + children, 120 s window): **2.42 %** of total (~10 % of one core)
+- RSS: **40 MB** (python) + transient ffmpeg child per frame
+- Per-cycle: fetch ~105–140 ms, ffmpeg decode ~110–133 ms, total ~265–280 ms
+- klippy impact: **none measurable** — `mcu_task_stddev` identical with worker
+  running vs not (3/8/6 µs for mcu/head0/head1), unchanged during a G28 X
+  motion window; sysload ≤0.31; memavail flat 3.74 GB; zero write failures.
+- Pi 4 projection: the CPU headroom is not the constraint (2.4 %); the
+  concerns on a Pi 4 are (a) ffmpeg/decode is software-only for some codecs —
+  still fine at 1 fps-class rates, (b) RAM: 40 MB worker + ~90 MB transient
+  ffmpeg against 1 GB total with klippy+moonraker+octopi-stack, and (c) SD
+  I/O from the JSONL metrics (negligible at 1 line/5 s, rotated). A Pi 4
+  would need: interval ≥5 s (already), ROI crop before diff (halves the
+  numpy work), and dropping the per-frame ffmpeg process spawn for a
+  persistent decoder if it ever matters.
+
+**BLOCKER — camera does not see the bed:** the machine's only camera
+(`/dev/video0`, sole UVC device, crowsnest [cam 1] → ustreamer 127.0.0.1:8080,
+640x480) currently shows warehouse shelving, not the printer bed. Verdicts
+computed on a non-bed scene would be bed_clear guesses (contract-forbidden),
+so the worker runs with `A3DP_BEDGATE_DETECT_POST=0`. To enable real
+detection: re-aim the camera (or add the bed camera), then per §Calibration:
+capture empty-bed references at lights-on × {25/60/110 °C bed}, positive set
+at ≥5 positions, ROC-tune thresholds, THEN set POST=1 (verdicts flow to
+`POST /api/occupancy` on :8083).
+
 ## Calibration / tuning procedure (data to collect on the Rift)
 1. Empty-bed references: 20 frames × {lights on/off} × {bed 25/60/110 °C}. Store raw +
    compensated orientation.

@@ -1,5 +1,10 @@
 # Machine profile: meter-idex (hostnames meter*, a3dpmeter*).
 # Services enabled at first boot — one per line.
-# Bedgate/monitor are intentionally NOT enabled on meter units: the detection
-# substrate for the meter lane runs off-box (a3dpmeter print monitor lane,
-# DETECTION-SPEC.md). Enable locally if a future spec says otherwise.
+# Bed gate (image v0.1.4, supersedes the earlier meter-specific exclusion):
+# ships on ALL printer profiles in fail-open/dry-run defaults — the daemon
+# runs but a fresh unit has no occupancy verdicts and the detection worker
+# has POSTING OFF (A3DP_BEDGATE_DETECT_POST=0), so the gate is present but
+# inert until a human calibrates detection per DETECTION-SPEC.md. Macros
+# hook into the profile's own euclid.cfg wrappers (builtin wrappers stripped
+# in macros/bed-gate.cfg — same pattern as the a3dp4006mm hand deploy).
+a3dp-bedgate

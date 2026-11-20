@@ -1,3 +1,8 @@
 # Machine profile: base (unrecognized host).
 # No profile config is deployed; placeholder printer.cfg from this dir's
-# config/ is used. No services enabled.
+# config/ is used.
+# Bed gate (image v0.1.4): daemon + detection worker ship on EVERY printer
+# profile in fail-open/dry-run defaults — a fresh unit boots safe with the
+# gate present but inert (no occupancy verdicts exist; the detect worker has
+# POSTING OFF). See services/a3dp-bedgate/ and README "Bed gate".
+a3dp-bedgate

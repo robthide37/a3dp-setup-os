@@ -64,3 +64,41 @@ bed-occupancy verification).
 Read `GATE-CONTRACT.md` fully before writing code — the fail-open heartbeat contract
 and the job_start pause semantics are safety decisions, not preferences.
 Detection method + tuning procedure: `DETECTION-SPEC.md`.
+
+## Deployed on a3dp4006mm (.101) — 2026-11-20 (t_39bbe296)
+
+- `macros/bed-gate.cfg` + `[include macros/bed-gate.cfg]` in printer.cfg; hooks
+  in `A3dp/webui_macros.cfg` (PRINT_START) and `euclid.cfg`
+  (BED_MESH_CALIBRATE, QUAD_GANTRY_LEVEL, PROBE_CALIBRATE, probe_setup,
+  HOMETEST, HOME_LVL_MESH, SETUP_RUN_QGL). **CALIBRATE_Z does not exist on
+  .101 — nothing to hook.** Standalone G28 remains deliberately ungated
+  (structural reasons, see comments in bed-gate.cfg).
+- The bed-gate.cfg **builtin wrappers are stripped for .101** (euclid.cfg
+  already wraps those names) — deploy via `deploy_bed_gate_101.py`, which
+  enforces that.
+- Backups: pi-side `config_backups/bedgate-20261120-022204/` (pre-gate
+  originals).
+- **BED_GATE_OVERRIDE now REQUIRES `WHO=`** (no anonymous override; the popup
+  buttons pass `WHO=klipper_prompt`). NOTE for the next Rift update: Rift's
+  live copy still has the old console-default signature — decide consciously
+  before redeploying there.
+- **Single-wire Euclid conversion (Rob, 2026-11-20): BLOCKED on a physical
+  wiring check.** Measured live: X endstop on `head0:PB11` read TRIGGERED at
+  rest for plain, `!` AND `^!` claims (with `^` the internal pullup held it
+  HIGH) → the pin is UNDRIVEN — the Euclid signal wire is not landing on
+  PB11 (or was disturbed during the 2026-11-20 head0 repair session). PA14
+  reads consistently open and homing works. **PA14 left in place**; run
+  `deploy_bed_gate_101.py --with-pin-change` after the wiring is fixed (it
+  auto-tries plain → `!` → `^!` and drops stepper_x homing_speed to 30 for
+  the first trigger verification). Also flagged: the machine's [probe] (pin
+  head0:PB11) reads triggered-at-rest on a live QUERY_PROBE — probing may be
+  broken right now independent of the gate.
+- Verified live (2026-11-20, all PASS): 9 sections after restart,
+  endstop/probe state-match, BED_GATE_STATUS, fail-open pass on
+  occupied+stale (no motion), WHO refusal (override_active stays False),
+  occupied verdict → block with last_reason, low-confidence verdict
+  rejected, TTL expiry → fail-open restore, kill -9 → auto-restart +
+  startup reset, ExecStop → fail-open write + console warning, heartbeat
+  ticks=0, X homing G28 X at the dock (PA14 path unchanged), daemon gate
+  pause + Mainsail prompt popup + button override (who=klipper_prompt) on a
+  dummy job, RESUME/cancel end-to-end.
